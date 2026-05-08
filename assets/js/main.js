@@ -330,10 +330,10 @@ function getOrCreateDeviceInstallId() {
 
 function createSupabaseClient() {
   const config = window.ATTENDANCE_CONFIG || {};
-  const url = config.supabaseUrl;
-  const key = config.supabaseAnonKey;
+  const url = config.supabaseUrl || localStorage.getItem("attendance.supabaseUrl");
+  const key = config.supabaseAnonKey || localStorage.getItem("attendance.supabaseAnonKey");
   if (!url || !key || !window.supabase?.createClient) {
-    throw new Error("Supabase configuration is required.");
+    return null;
   }
   return window.supabase.createClient(url, key, {
     auth: { persistSession: true, autoRefreshToken: true },
@@ -345,6 +345,9 @@ function syntheticEmail(passId) {
 }
 
 async function rpc(name, params) {
+  if (!state.supabase) {
+    throw new Error("Supabase configuration is required.");
+  }
   const { data, error } = await state.supabase.rpc(name, params ?? {});
   if (error) throw new Error(error.message);
   return data;
@@ -355,6 +358,11 @@ async function rpc(name, params) {
 // -----------------------------------------------------------------------------
 
 async function bootstrapAuth() {
+  if (!state.supabase) {
+    renderLoggedOut();
+    els.loginStatus.textContent = "Supabase configuration is required. Add config.local.js locally or configure GitHub Pages to publish runtime config.";
+    return;
+  }
   const { data, error } = await state.supabase.auth.getSession();
   if (error) {
     els.loginStatus.textContent = error.message;
@@ -531,6 +539,10 @@ function applyDarkMode(on) {
 
 async function handleAuthSubmit(event) {
   event.preventDefault();
+  if (!state.supabase) {
+    els.loginStatus.textContent = "Supabase configuration is required.";
+    return;
+  }
   const passId = els.passId.value.trim().toUpperCase();
   const password = els.password.value;
   if (!CONFIG.PASS_ID_REGEX.test(passId)) {

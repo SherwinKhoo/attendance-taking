@@ -4,7 +4,7 @@
 // is always fetched live from network so users never run stale code.
 
 const OFFLINE_VERSION = "v1";
-const OFFLINE_URL = "/offline.html";
+const OFFLINE_URL = new URL("offline.html", self.registration.scope).href;
 const CACHE_NAME = `attendance-offline-${OFFLINE_VERSION}`;
 
 self.addEventListener("install", (event) => {
