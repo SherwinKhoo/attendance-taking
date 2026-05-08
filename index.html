@@ -1,14 +1,37 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>ICT Things</title>
-    <link rel="stylesheet" href="styles.css" />
+    <title>Attendance</title>
+    <link rel="manifest" href="/assets/pwa/manifest.json" />
+    <meta name="theme-color" content="#0f172a" />
+    <meta name="apple-mobile-web-app-capable" content="yes" />
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+    <meta name="apple-mobile-web-app-title" content="Attendance" />
+    <link rel="apple-touch-icon" href="/icons/icon-192.png" />
+    <link rel="stylesheet" href="/assets/css/styles.css" />
   </head>
   <body>
-    <script src="https://cdn.jsdelivr.net/npm/qrcode/build/qrcode.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/jsqr/dist/jsQR.min.js"></script>
-    <script src="script.js"></script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/zxing-wasm@3.0.2/dist/iife/full/index.js"
+      integrity="sha384-diLqd15q/OMe9Fj4DUTgVOu/UHT1R0GJZIdsjf/p7XldkyffrPGmGRFs8oA3tnB2"
+      crossorigin="anonymous"
+    ></script>
+    <script
+      src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2.77.0/dist/umd/supabase.min.js"
+      integrity="sha384-WevB1u/qAoxw6WU+CNIOxFMImC+SVKJg86I5stmNjaIoZGdH0ysxegNb8ZJS+0lx"
+      crossorigin="anonymous"
+    ></script>
+    <script src="config.local.js"></script>
+    <script src="/assets/js/admin.js"></script>
+    <script src="/assets/js/main.js"></script>
+    <script>
+      if ("serviceWorker" in navigator) {
+        window.addEventListener("load", () => {
+          navigator.serviceWorker.register("/sw.js").catch(() => {});
+        });
+      }
+    </script>
   </body>
 </html>

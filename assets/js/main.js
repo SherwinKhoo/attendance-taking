@@ -1,0 +1,1100 @@
+"use strict";
+
+// =============================================================================
+// Attendance app — main.js (Supabase Auth model)
+// =============================================================================
+// User-facing app. Admin-only screens live in admin.js (loaded in the same
+// bundle and gated by profile.role === 'admin').
+//
+// Auth: Supabase Auth via signInWithPassword. The user types a pass-ID + their
+// daily/permanent password; this code synthesises the auth email server-side
+// (${pass_id}@passid.local). The synthetic email is never user-visible.
+//
+// Persistence: localStorage (Supabase JS client default). Logout clears all
+// app-local keys. sessionStorage variant is a single-line config flip if ever
+// needed (deferred to v2).
+// =============================================================================
+
+const ZXING_WASM_VERSION = "3.0.2";
+const ZXING_WASM_URL = `https://cdn.jsdelivr.net/npm/zxing-wasm@${ZXING_WASM_VERSION}/dist/full/zxing_full.wasm`;
+
+const STORAGE_KEYS = {
+  deviceInstallId: "attendance.deviceInstallId",
+  latestCreatorSession: "attendance.latestCreatorSession",
+  darkMode: "attendance.darkMode",
+};
+
+const CONFIG = {
+  PASS_ID_REGEX: /^[A-Z0-9][A-Z0-9_-]{2,31}$/i,
+  PASSWORD_REGEX: /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*._-])[A-Za-z0-9!@#$%^&*._-]{10,16}$/,
+  PASSWORD_ALLOWED_MESSAGE:
+    "Use 10-16 characters with upper and lower case letters, numbers, and an approved symbol (!@#$%^&*._-).",
+  COORDINATE_DECIMALS: 6,
+  LOCATION_MARGIN_METRES: 50,
+  GEOLOCATION_OPTIONS: {
+    enableHighAccuracy: true,
+    timeout: 10000,
+    maximumAge: 0,
+  },
+  QR_MIN_VERSION: 1,
+  QR_MAX_VERSION: 40,
+  QR_ERROR_CORRECTION: "H",
+  QR_MASK_PATTERN: 2,
+  BARCODE_FORMATS: {
+    QR_CODE: "QRCode",
+    AZTEC: "Aztec",
+    MAXI_CODE: "MaxiCode",
+  },
+};
+
+if (window.ZXingWASM) {
+  ZXingWASM.setZXingModuleOverrides({
+    locateFile: (path, prefix) => {
+      if (path === "zxing_full.wasm" || path.endsWith("/zxing_full.wasm")) {
+        return ZXING_WASM_URL;
+      }
+      return prefix + path;
+    },
+  });
+}
+
+const state = {
+  deviceInstallId: getOrCreateDeviceInstallId(),
+  supabase: createSupabaseClient(),
+  profile: null,
+  latestSession: null,
+  attendanceCamera: createCameraState(),
+  notifications: [],
+  notificationsChannel: null,
+};
+
+// -----------------------------------------------------------------------------
+// Layout
+// -----------------------------------------------------------------------------
+
+const app = document.createElement("main");
+app.id = "app";
+app.innerHTML = `
+  <header class="app-header">
+    <div>
+      <p class="eyebrow">Attendance</p>
+      <h1>Session check-in</h1>
+    </div>
+    <div class="header-actions">
+      <button id="settings-toggle" type="button" class="icon-btn" aria-label="Settings" hidden>
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+             stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="12" cy="12" r="3"/>
+          <path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 0 1 0 2.83 2 2 0 0 1-2.83 0l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09a1.65 1.65 0 0 0-1-1.51 1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 0 1-2.83 0 2 2 0 0 1 0-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09a1.65 1.65 0 0 0 1.51-1 1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 0 1 0-2.83 2 2 0 0 1 2.83 0l.06.06a1.65 1.65 0 0 0 1.82.33h0a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51h0a1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 0 1 2.83 0 2 2 0 0 1 0 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82v0a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/>
+        </svg>
+      </button>
+    </div>
+  </header>
+
+  <div id="connectivity-banner" class="banner banner-warning" hidden>
+    Connection lost. Submissions will fail until you reconnect.
+  </div>
+
+  <section class="zone" aria-labelledby="attendance-title">
+    <div class="zone-heading">
+      <div><h2 id="attendance-title">Submit attendance</h2></div>
+      <span class="status" id="attendance-login-status"></span>
+    </div>
+    <video id="attendance-camera" class="camera" autoplay muted playsinline></video>
+    <div class="action-row">
+      <button id="attendance-camera-toggle" type="button">Start camera</button>
+      <button id="attendance-scan" type="button" disabled>Scan session QR</button>
+    </div>
+    <p class="status-line" id="attendance-status">Log in below, then scan the session QR code.</p>
+  </section>
+
+  <section class="zone" id="session-zone" aria-labelledby="session-title">
+    <div class="zone-heading">
+      <div><h2 id="session-title">Generate session QR</h2></div>
+      <button id="restore-session" type="button">Restore latest</button>
+    </div>
+    <form id="session-form" class="form-grid">
+      <label>
+        <span>Session name</span>
+        <input id="session-name" name="session-name" autocomplete="off" required placeholder="Session Name" />
+      </label>
+      <label>
+        <span>Start date</span>
+        <input id="session-date" name="session-date" type="date" required />
+      </label>
+      <label>
+        <span>Start time</span>
+        <input id="session-time" name="session-time" type="time" required />
+      </label>
+      <label>
+        <span>Grace period</span>
+        <input id="grace-period" name="grace-period" type="number" min="0" step="1" value="0" required />
+      </label>
+      <label>
+        <span>QR format</span>
+        <select id="barcode-format" name="barcode-format">
+          <option value="QRCode">QR Code</option>
+          <option value="Aztec">Aztec</option>
+          <option value="MaxiCode">MaxiCode</option>
+        </select>
+      </label>
+      <button id="generate-session" type="submit">Generate QR</button>
+    </form>
+    <div class="qr-layout">
+      <canvas id="session-qr"></canvas>
+      <div class="session-summary" id="session-summary">No active generated session restored for this login.</div>
+    </div>
+    <div class="action-row">
+      <button id="fullscreen-qr" type="button" disabled>Full-screen poster</button>
+      <button id="refresh-attendee-total" type="button" disabled>Refresh attendee total</button>
+      <button id="export-csv" type="button" disabled>Export canonical CSV</button>
+    </div>
+    <p class="status-line" id="attendee-total">Total attendees: 0</p>
+    <p class="status-line" id="session-status"></p>
+  </section>
+
+  <section class="zone zone-compact" aria-labelledby="login-title">
+    <div class="zone-heading">
+      <div><h2 id="login-title">Pass ID authentication</h2></div>
+      <button id="logout" type="button" hidden>Logout</button>
+    </div>
+    <p class="status-line" id="login-status"></p>
+    <form id="login-form" class="login-form">
+      <label>
+        <span>Pass ID</span>
+        <input id="pass-id" name="pass-id" autocomplete="username" placeholder="e.g. A-001" required />
+      </label>
+      <label>
+        <span>Password</span>
+        <span class="password-field">
+          <input id="password" name="password" type="password" autocomplete="current-password"
+                 placeholder="10-16 characters" required />
+          <button id="password-visibility-toggle" type="button" aria-controls="password" aria-pressed="false">Show</button>
+        </span>
+      </label>
+      <button id="login-submit" type="submit">Log in</button>
+    </form>
+    <div class="profile-strip" id="profile-strip"></div>
+  </section>
+
+  <div id="admin-mount"></div>
+
+  <dialog id="confirm-dialog">
+    <form method="dialog" class="modal-panel">
+      <h2 id="confirm-session-name"></h2>
+      <menu>
+        <button id="cancel-submit" value="cancel">Cancel</button>
+        <button id="confirm-submit" value="confirm">Confirm</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="password-dialog">
+    <form id="password-form" class="modal-panel" method="dialog">
+      <h2 id="password-dialog-title">Change password</h2>
+      <p id="password-dialog-intro" class="status-line"></p>
+      <label>
+        <span>Current password</span>
+        <input id="password-old" type="password" autocomplete="current-password" required />
+      </label>
+      <label>
+        <span>New password</span>
+        <input id="password-new" type="password" autocomplete="new-password" required />
+      </label>
+      <label>
+        <span>Confirm new password</span>
+        <input id="password-confirm" type="password" autocomplete="new-password" required />
+      </label>
+      <p class="validation-line" id="password-dialog-validation"></p>
+      <menu>
+        <button id="password-cancel" type="button" value="cancel">Cancel</button>
+        <button id="password-submit" type="submit" value="submit">Save password</button>
+      </menu>
+    </form>
+  </dialog>
+
+  <dialog id="settings-dialog">
+    <div class="modal-panel">
+      <header class="settings-header">
+        <h2>Settings</h2>
+        <button id="settings-close" type="button" class="icon-btn" aria-label="Close">&times;</button>
+      </header>
+      <section class="settings-section">
+        <label class="toggle">
+          <input id="dark-mode-toggle" type="checkbox" />
+          <span>Dark mode</span>
+        </label>
+        <button id="settings-change-password" type="button">Change password</button>
+      </section>
+      <section class="settings-section">
+        <h3>Notifications</h3>
+        <ul id="notifications-list" class="notifications-list"></ul>
+      </section>
+    </div>
+  </dialog>
+
+  <dialog id="qr-fullscreen-dialog" class="qr-fullscreen">
+    <button id="qr-fullscreen-close" type="button" class="icon-btn qr-fullscreen-close" aria-label="Close">&times;</button>
+    <canvas id="qr-fullscreen-canvas"></canvas>
+    <p id="qr-fullscreen-caption"></p>
+  </dialog>
+`;
+
+document.body.append(app);
+
+const els = {
+  settingsToggle: document.getElementById("settings-toggle"),
+  connectivityBanner: document.getElementById("connectivity-banner"),
+  attendanceLoginStatus: document.getElementById("attendance-login-status"),
+  attendanceCamera: document.getElementById("attendance-camera"),
+  attendanceCameraToggle: document.getElementById("attendance-camera-toggle"),
+  attendanceScan: document.getElementById("attendance-scan"),
+  attendanceStatus: document.getElementById("attendance-status"),
+  sessionZone: document.getElementById("session-zone"),
+  sessionForm: document.getElementById("session-form"),
+  sessionName: document.getElementById("session-name"),
+  sessionDate: document.getElementById("session-date"),
+  sessionTime: document.getElementById("session-time"),
+  gracePeriod: document.getElementById("grace-period"),
+  barcodeFormat: document.getElementById("barcode-format"),
+  restoreSession: document.getElementById("restore-session"),
+  sessionQr: document.getElementById("session-qr"),
+  sessionSummary: document.getElementById("session-summary"),
+  attendeeTotal: document.getElementById("attendee-total"),
+  sessionStatus: document.getElementById("session-status"),
+  fullscreenQr: document.getElementById("fullscreen-qr"),
+  refreshAttendeeTotal: document.getElementById("refresh-attendee-total"),
+  exportCsv: document.getElementById("export-csv"),
+  loginForm: document.getElementById("login-form"),
+  passId: document.getElementById("pass-id"),
+  password: document.getElementById("password"),
+  passwordVisibilityToggle: document.getElementById("password-visibility-toggle"),
+  loginSubmit: document.getElementById("login-submit"),
+  loginStatus: document.getElementById("login-status"),
+  profileStrip: document.getElementById("profile-strip"),
+  logout: document.getElementById("logout"),
+  confirmDialog: document.getElementById("confirm-dialog"),
+  confirmSessionName: document.getElementById("confirm-session-name"),
+  confirmSubmit: document.getElementById("confirm-submit"),
+  cancelSubmit: document.getElementById("cancel-submit"),
+  passwordDialog: document.getElementById("password-dialog"),
+  passwordDialogTitle: document.getElementById("password-dialog-title"),
+  passwordDialogIntro: document.getElementById("password-dialog-intro"),
+  passwordForm: document.getElementById("password-form"),
+  passwordOld: document.getElementById("password-old"),
+  passwordNew: document.getElementById("password-new"),
+  passwordConfirm: document.getElementById("password-confirm"),
+  passwordDialogValidation: document.getElementById("password-dialog-validation"),
+  passwordCancel: document.getElementById("password-cancel"),
+  passwordSubmit: document.getElementById("password-submit"),
+  settingsDialog: document.getElementById("settings-dialog"),
+  settingsClose: document.getElementById("settings-close"),
+  darkModeToggle: document.getElementById("dark-mode-toggle"),
+  settingsChangePassword: document.getElementById("settings-change-password"),
+  notificationsList: document.getElementById("notifications-list"),
+  qrFullscreenDialog: document.getElementById("qr-fullscreen-dialog"),
+  qrFullscreenClose: document.getElementById("qr-fullscreen-close"),
+  qrFullscreenCanvas: document.getElementById("qr-fullscreen-canvas"),
+  qrFullscreenCaption: document.getElementById("qr-fullscreen-caption"),
+  adminMount: document.getElementById("admin-mount"),
+};
+
+let pendingSessionPayload = null;
+let forcedPasswordChange = false;
+
+// -----------------------------------------------------------------------------
+// Bootstrap
+// -----------------------------------------------------------------------------
+
+setDefaultStartTime();
+applyDarkMode(localStorage.getItem(STORAGE_KEYS.darkMode) === "1");
+attachEventListeners();
+attachConnectivityListeners();
+bootstrapAuth();
+
+// -----------------------------------------------------------------------------
+// State helpers
+// -----------------------------------------------------------------------------
+
+function createCameraState() {
+  return { isActive: false, mediaStream: null };
+}
+
+function getOrCreateDeviceInstallId() {
+  const existing = localStorage.getItem(STORAGE_KEYS.deviceInstallId);
+  if (existing) return existing;
+  const created = crypto.randomUUID();
+  localStorage.setItem(STORAGE_KEYS.deviceInstallId, created);
+  return created;
+}
+
+function createSupabaseClient() {
+  const config = window.ATTENDANCE_CONFIG || {};
+  const url = config.supabaseUrl;
+  const key = config.supabaseAnonKey;
+  if (!url || !key || !window.supabase?.createClient) {
+    throw new Error("Supabase configuration is required.");
+  }
+  return window.supabase.createClient(url, key, {
+    auth: { persistSession: true, autoRefreshToken: true },
+  });
+}
+
+function syntheticEmail(passId) {
+  return `${String(passId).trim().toLowerCase()}@passid.local`;
+}
+
+async function rpc(name, params) {
+  const { data, error } = await state.supabase.rpc(name, params ?? {});
+  if (error) throw new Error(error.message);
+  return data;
+}
+
+// -----------------------------------------------------------------------------
+// Auth bootstrap
+// -----------------------------------------------------------------------------
+
+async function bootstrapAuth() {
+  const { data, error } = await state.supabase.auth.getSession();
+  if (error) {
+    els.loginStatus.textContent = error.message;
+  }
+  if (data?.session) {
+    await onAuthenticated();
+  } else {
+    renderLoggedOut();
+  }
+
+  state.supabase.auth.onAuthStateChange(async (event) => {
+    if (event === "SIGNED_OUT") {
+      renderLoggedOut();
+    } else if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED" || event === "USER_UPDATED") {
+      await onAuthenticated();
+    }
+  });
+}
+
+async function onAuthenticated() {
+  try {
+    const profile = await rpc("get_current_login_profile", { p_device_install_id: state.deviceInstallId });
+    state.profile = profile;
+    if (profile.archived_at) {
+      els.loginStatus.textContent = "This account has been archived. Please contact your administrator.";
+      await state.supabase.auth.signOut();
+      return;
+    }
+    if (profile.needs_password_change) {
+      forcedPasswordChange = true;
+      openPasswordDialog({
+        title: "Set a new password",
+        intro: "You're using a temporary password. Set a new one to continue.",
+        force: true,
+      });
+      return;
+    }
+    forcedPasswordChange = false;
+    renderLoggedIn(profile);
+    subscribeNotifications(profile);
+    if (profile.role === "admin" && window.AttendanceAdmin?.mount) {
+      window.AttendanceAdmin.mount({
+        supabase: state.supabase,
+        profile,
+        rpc,
+        mountEl: els.adminMount,
+      });
+    }
+    restoreLatestSession();
+  } catch (err) {
+    els.loginStatus.textContent = err.message;
+  }
+}
+
+function renderLoggedOut() {
+  state.profile = null;
+  state.latestSession = null;
+  pendingSessionPayload = null;
+  forcedPasswordChange = false;
+  if (state.notificationsChannel) {
+    state.supabase.removeChannel(state.notificationsChannel);
+    state.notificationsChannel = null;
+  }
+  els.logout.hidden = true;
+  els.settingsToggle.hidden = true;
+  els.profileStrip.textContent = "";
+  els.attendanceLoginStatus.textContent = "Not logged in";
+  els.loginStatus.textContent = "Log in with a pre-provisioned pass ID.";
+  els.passId.value = "";
+  els.password.value = "";
+  els.fullscreenQr.disabled = true;
+  els.refreshAttendeeTotal.disabled = true;
+  els.exportCsv.disabled = true;
+  els.attendeeTotal.textContent = "Total attendees: 0";
+  if (window.AttendanceAdmin?.unmount) window.AttendanceAdmin.unmount();
+  clearBarcodeDisplay();
+}
+
+function renderLoggedIn(profile) {
+  els.logout.hidden = false;
+  els.settingsToggle.hidden = false;
+  els.passId.value = profile.pass_id ?? "";
+  els.password.value = "";
+  // Session generation card is always visible. Server-side role check in
+  // create_attendance_session RPC rejects unauthorised submissions.
+  els.profileStrip.textContent = [
+    `Campus: ${profile.campus ?? "—"}`,
+    `Group: ${profile.group_name ?? "—"}`,
+    `Sub-group: ${profile.sub_group ?? "—"}`,
+    `Role: ${profile.role}`,
+  ].join(" / ");
+  els.attendanceLoginStatus.textContent = `Logged in: ${profile.pass_id ?? profile.profile_id}`;
+  els.loginStatus.textContent = `Logged in as ${profile.pass_id ?? profile.profile_id}.`;
+}
+
+// -----------------------------------------------------------------------------
+// Listeners
+// -----------------------------------------------------------------------------
+
+function attachEventListeners() {
+  els.attendanceCameraToggle.addEventListener("click", () =>
+    toggleCamera(state.attendanceCamera, els.attendanceCamera, els.attendanceCameraToggle, els.attendanceScan, els.attendanceStatus),
+  );
+  els.attendanceScan.addEventListener("click", handleAttendanceScan);
+  els.sessionForm.addEventListener("submit", handleSessionCreate);
+  els.restoreSession.addEventListener("click", restoreLatestSession);
+  els.fullscreenQr.addEventListener("click", openFullscreenQr);
+  els.refreshAttendeeTotal.addEventListener("click", refreshAttendeeTotal);
+  els.exportCsv.addEventListener("click", handleCsvExport);
+  els.loginForm.addEventListener("submit", handleAuthSubmit);
+  els.passwordVisibilityToggle.addEventListener("click", togglePasswordVisibility);
+  els.logout.addEventListener("click", handleLogout);
+  els.confirmSubmit.addEventListener("click", (event) => {
+    event.preventDefault();
+    submitPendingAttendance();
+  });
+  els.cancelSubmit.addEventListener("click", () => {
+    pendingSessionPayload = null;
+  });
+  els.settingsToggle.addEventListener("click", () => els.settingsDialog.showModal());
+  els.settingsClose.addEventListener("click", () => els.settingsDialog.close());
+  els.darkModeToggle.addEventListener("change", (e) => {
+    applyDarkMode(e.target.checked);
+    localStorage.setItem(STORAGE_KEYS.darkMode, e.target.checked ? "1" : "0");
+  });
+  els.darkModeToggle.checked = document.body.classList.contains("dark");
+  els.settingsChangePassword.addEventListener("click", () => {
+    els.settingsDialog.close();
+    openPasswordDialog({
+      title: "Change password",
+      intro: "Enter your current password and a new one.",
+      force: false,
+    });
+  });
+  els.passwordCancel.addEventListener("click", () => {
+    if (forcedPasswordChange) {
+      // User declined the forced change; sign them out so the app stays gated.
+      state.supabase.auth.signOut();
+    }
+    closePasswordDialog();
+  });
+  // Esc dismissal: during a forced change, treat as "Sign out" rather than
+  // letting the modal close silently and leave the app in a stuck state.
+  els.passwordDialog.addEventListener("cancel", (event) => {
+    if (forcedPasswordChange) {
+      event.preventDefault();
+      state.supabase.auth.signOut();
+    }
+  });
+  els.passwordForm.addEventListener("submit", (event) => {
+    event.preventDefault();
+    handlePasswordSubmit();
+  });
+  els.qrFullscreenClose.addEventListener("click", () => els.qrFullscreenDialog.close());
+}
+
+function attachConnectivityListeners() {
+  const update = () => {
+    els.connectivityBanner.hidden = navigator.onLine;
+  };
+  window.addEventListener("online", update);
+  window.addEventListener("offline", update);
+  update();
+}
+
+function applyDarkMode(on) {
+  document.body.classList.toggle("dark", !!on);
+  if (els.darkModeToggle) els.darkModeToggle.checked = !!on;
+}
+
+// -----------------------------------------------------------------------------
+// Auth handlers
+// -----------------------------------------------------------------------------
+
+async function handleAuthSubmit(event) {
+  event.preventDefault();
+  const passId = els.passId.value.trim().toUpperCase();
+  const password = els.password.value;
+  if (!CONFIG.PASS_ID_REGEX.test(passId)) {
+    els.loginStatus.textContent = "Enter a valid pass ID.";
+    return;
+  }
+  if (!password) {
+    els.loginStatus.textContent = "Enter your password.";
+    return;
+  }
+  els.loginStatus.textContent = "Signing in...";
+  const { error } = await state.supabase.auth.signInWithPassword({
+    email: syntheticEmail(passId),
+    password,
+  });
+  if (error) {
+    els.loginStatus.textContent = "Pass ID or password is incorrect.";
+    return;
+  }
+  // onAuthStateChange will fire and run onAuthenticated().
+}
+
+async function handleLogout() {
+  await state.supabase.auth.signOut();
+  // Drop app-local non-auth state. (Supabase's own keys are cleared by signOut.)
+  for (const key of Object.values(STORAGE_KEYS)) {
+    if (key === STORAGE_KEYS.deviceInstallId) continue; // keep device id stable
+    if (key === STORAGE_KEYS.darkMode) continue;        // user UI preference
+    localStorage.removeItem(key);
+  }
+}
+
+function togglePasswordVisibility() {
+  const isVisible = els.password.type === "text";
+  els.password.type = isVisible ? "password" : "text";
+  els.passwordVisibilityToggle.textContent = isVisible ? "Show" : "Hide";
+  els.passwordVisibilityToggle.setAttribute("aria-pressed", String(!isVisible));
+}
+
+// -----------------------------------------------------------------------------
+// Password change modal
+// -----------------------------------------------------------------------------
+
+function openPasswordDialog({ title, intro, force }) {
+  els.passwordDialogTitle.textContent = title;
+  els.passwordDialogIntro.textContent = intro;
+  els.passwordOld.value = "";
+  els.passwordNew.value = "";
+  els.passwordConfirm.value = "";
+  els.passwordDialogValidation.textContent = "";
+  els.passwordCancel.textContent = force ? "Sign out" : "Cancel";
+  els.passwordDialog.showModal();
+}
+
+function closePasswordDialog() {
+  els.passwordDialog.close();
+}
+
+async function handlePasswordSubmit() {
+  const oldPassword = els.passwordOld.value;
+  const newPassword = els.passwordNew.value;
+  const confirmPassword = els.passwordConfirm.value;
+  if (newPassword !== confirmPassword) {
+    els.passwordDialogValidation.textContent = "New password and confirmation do not match.";
+    return;
+  }
+  if (!CONFIG.PASSWORD_REGEX.test(newPassword)) {
+    els.passwordDialogValidation.textContent = CONFIG.PASSWORD_ALLOWED_MESSAGE;
+    return;
+  }
+
+  // Verify old password by re-authenticating. signInWithPassword refreshes the
+  // session on success and yields a clear error on failure, without requiring
+  // a separate "verify only" RPC.
+  const passId = state.profile?.pass_id || els.passId.value.trim().toUpperCase();
+  if (!passId) {
+    els.passwordDialogValidation.textContent = "Pass ID unknown — please log in again.";
+    return;
+  }
+  const { error: reauthErr } = await state.supabase.auth.signInWithPassword({
+    email: syntheticEmail(passId),
+    password: oldPassword,
+  });
+  if (reauthErr) {
+    els.passwordDialogValidation.textContent = "Current password is incorrect.";
+    return;
+  }
+
+  const { error: updateErr } = await state.supabase.auth.updateUser({ password: newPassword });
+  if (updateErr) {
+    els.passwordDialogValidation.textContent = updateErr.message;
+    return;
+  }
+
+  try {
+    await rpc("mark_password_set");
+  } catch (err) {
+    els.passwordDialogValidation.textContent = err.message;
+    return;
+  }
+
+  closePasswordDialog();
+  forcedPasswordChange = false;
+  // Refresh profile + render.
+  await onAuthenticated();
+}
+
+// -----------------------------------------------------------------------------
+// Notifications
+// -----------------------------------------------------------------------------
+
+async function subscribeNotifications(profile) {
+  if (state.notificationsChannel) {
+    state.supabase.removeChannel(state.notificationsChannel);
+    state.notificationsChannel = null;
+  }
+  await refreshNotifications();
+  // Realtime subscription. RLS handles scope filtering server-side.
+  state.notificationsChannel = state.supabase
+    .channel(`notifications-${profile.profile_id}`)
+    .on(
+      "postgres_changes",
+      { event: "INSERT", schema: "public", table: "notifications" },
+      () => refreshNotifications(),
+    )
+    .on(
+      "postgres_changes",
+      { event: "UPDATE", schema: "public", table: "notifications" },
+      () => refreshNotifications(),
+    )
+    .subscribe();
+}
+
+async function refreshNotifications() {
+  const { data, error } = await state.supabase
+    .from("notifications")
+    .select("id, title, body, link_url, pinned, created_at, expires_at")
+    .order("pinned", { ascending: false })
+    .order("created_at", { ascending: false })
+    .limit(50);
+  if (error) {
+    state.notifications = [];
+  } else {
+    state.notifications = data ?? [];
+  }
+  renderNotifications();
+}
+
+function renderNotifications() {
+  if (!els.notificationsList) return;
+  els.notificationsList.innerHTML = "";
+  if (state.notifications.length === 0) {
+    const li = document.createElement("li");
+    li.className = "notifications-empty";
+    li.textContent = "No notifications.";
+    els.notificationsList.append(li);
+    return;
+  }
+  for (const n of state.notifications) {
+    const li = document.createElement("li");
+    li.className = "notification-item" + (n.pinned ? " is-pinned" : "");
+    const title = document.createElement("strong");
+    title.textContent = n.title;
+    const body = document.createElement("p");
+    body.textContent = n.body;
+    li.append(title, body);
+    const safeHref = sanitiseLinkUrl(n.link_url);
+    if (safeHref) {
+      const link = document.createElement("a");
+      link.href = safeHref;
+      link.target = "_blank";
+      link.rel = "noopener noreferrer";
+      link.textContent = "Open link";
+      li.append(link);
+    }
+    const meta = document.createElement("span");
+    meta.className = "notification-meta";
+    meta.textContent = new Date(n.created_at).toLocaleString();
+    li.append(meta);
+    els.notificationsList.append(li);
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Camera & scanning
+// -----------------------------------------------------------------------------
+
+async function toggleCamera(cameraState, video, toggleButton, scanButton, statusElement) {
+  try {
+    if (!cameraState.isActive) {
+      cameraState.mediaStream = await navigator.mediaDevices.getUserMedia({
+        video: { facingMode: "environment" },
+      });
+      video.srcObject = cameraState.mediaStream;
+      await video.play();
+      cameraState.isActive = true;
+      toggleButton.textContent = "Stop camera";
+      scanButton.disabled = false;
+      statusElement.textContent = "Camera is active.";
+    } else {
+      stopCamera(cameraState, video);
+      toggleButton.textContent = "Start camera";
+      scanButton.disabled = true;
+      statusElement.textContent = "Camera stopped.";
+    }
+  } catch (error) {
+    statusElement.textContent = error.message || "Error accessing camera.";
+    scanButton.disabled = true;
+  }
+}
+
+function stopCamera(cameraState, video) {
+  cameraState.mediaStream?.getTracks().forEach((t) => t.stop());
+  cameraState.mediaStream = null;
+  cameraState.isActive = false;
+  video.srcObject = null;
+}
+
+async function handleAttendanceScan() {
+  if (!requireLogin(els.attendanceStatus)) return;
+  try {
+    const scanned = await scanBarcodeFromVideo(els.attendanceCamera);
+    const payload = parseSessionPayload(scanned);
+    pendingSessionPayload = payload;
+    els.confirmSessionName.textContent = payload.session_name;
+    els.confirmDialog.showModal();
+  } catch (error) {
+    els.attendanceStatus.textContent = error.message;
+  }
+}
+
+async function submitPendingAttendance() {
+  if (!pendingSessionPayload) return;
+  const payload = pendingSessionPayload;
+  pendingSessionPayload = null;
+  els.confirmDialog.close();
+
+  try {
+    els.attendanceStatus.textContent = "Getting submitter location...";
+    const position = await getDeviceLocation();
+    const result = await rpc("submit_attendance", {
+      p_session_payload: payload,
+      p_device_install_id: state.deviceInstallId,
+      p_submitter_lat: roundCoordinate(position.coords.latitude),
+      p_submitter_lon: roundCoordinate(position.coords.longitude),
+    });
+    const flags = result.flags?.length ? ` Flags: ${result.flags.join(", ")}.` : "";
+    els.attendanceStatus.textContent = `Submitted attendance for ${payload.session_name}. Status: ${result.status || "accepted"}.${flags}`;
+  } catch (error) {
+    els.attendanceStatus.textContent = error.message || "Attendance submission failed.";
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Session creation
+// -----------------------------------------------------------------------------
+
+async function handleSessionCreate(event) {
+  event.preventDefault();
+  if (!requireLogin(els.sessionStatus)) return;
+
+  const intendedStart = toIsoFromDateAndTime(els.sessionDate.value, els.sessionTime.value);
+  if (!intendedStart) {
+    els.sessionStatus.textContent = "Choose an intended start date and time.";
+    return;
+  }
+
+  try {
+    els.sessionStatus.textContent = "Getting creator location...";
+    const position = await getDeviceLocation();
+    const payload = await rpc("create_attendance_session", {
+      p_code: crypto.randomUUID(),
+      p_name: els.sessionName.value.trim(),
+      p_intended_start_at: intendedStart,
+      p_grace_period_minutes: Number(els.gracePeriod.value),
+      p_creator_lat: roundCoordinate(position.coords.latitude),
+      p_creator_lon: roundCoordinate(position.coords.longitude),
+      p_device_install_id: state.deviceInstallId,
+    });
+
+    state.latestSession = payload;
+    localStorage.setItem(STORAGE_KEYS.latestCreatorSession, JSON.stringify(payload));
+    await renderSessionQr(payload);
+    renderSessionSummary(payload);
+    els.fullscreenQr.disabled = false;
+    els.exportCsv.disabled = false;
+    els.refreshAttendeeTotal.disabled = false;
+    els.sessionStatus.textContent = "Session QR generated.";
+    await refreshAttendeeTotal();
+  } catch (error) {
+    els.sessionStatus.textContent = error.message || "Could not create session.";
+  }
+}
+
+async function restoreLatestSession() {
+  if (!state.profile) return;
+  if (!["representative", "coordinator", "admin"].includes(state.profile.role)) return;
+
+  try {
+    const payload = await rpc("get_latest_active_session_qr_for_creator", {
+      p_device_install_id: state.deviceInstallId,
+    });
+    if (!payload) return;
+    state.latestSession = payload;
+    await renderSessionQr(payload);
+    renderSessionSummary(payload);
+    els.fullscreenQr.disabled = false;
+    els.exportCsv.disabled = false;
+    els.refreshAttendeeTotal.disabled = false;
+    els.sessionStatus.textContent = "Latest active session QR restored.";
+    await refreshAttendeeTotal();
+  } catch (error) {
+    els.sessionStatus.textContent = error.message;
+  }
+}
+
+async function refreshAttendeeTotal() {
+  if (!requireLogin(els.sessionStatus)) return;
+  if (!state.latestSession) {
+    els.attendeeTotal.textContent = "Total attendees: 0";
+    return;
+  }
+  try {
+    const rows = await rpc("view_session_attendance", { p_session_id: state.latestSession.session_id });
+    const canonical = new Set((rows || []).filter((r) => r.canonical).map((r) => r.pass_id));
+    els.attendeeTotal.textContent = `Total attendees: ${canonical.size}`;
+  } catch (error) {
+    els.sessionStatus.textContent = error.message || "Could not refresh attendee total.";
+  }
+}
+
+async function handleCsvExport() {
+  if (!requireLogin(els.sessionStatus)) return;
+  if (!state.latestSession) return;
+  try {
+    const csv = await rpc("export_canonical_attendance_csv", {
+      p_session_id: state.latestSession.session_id,
+    });
+    downloadText(`${state.latestSession.session_code}-canonical-attendance.csv`, csv, "text/csv");
+    els.sessionStatus.textContent = "Canonical attendance CSV exported.";
+  } catch (error) {
+    els.sessionStatus.textContent = error.message || "CSV export failed.";
+  }
+}
+
+// -----------------------------------------------------------------------------
+// QR rendering & full-screen poster
+// -----------------------------------------------------------------------------
+
+async function renderSessionQr(payload) {
+  await renderBarcodeToCanvas(JSON.stringify(payload), els.sessionQr, els.barcodeFormat.value);
+}
+
+async function renderBarcodeToCanvas(payloadText, canvas, format) {
+  const writeOutput = await writeBarcodeWithBestSize(payloadText, format);
+  const imageBitmap = await createImageBitmap(writeOutput.image);
+  const displaySize = Math.max(canvas.clientWidth || 320, 260);
+  canvas.width = displaySize;
+  canvas.height = displaySize;
+  const ctx = canvas.getContext("2d");
+  ctx.imageSmoothingEnabled = false;
+  ctx.fillStyle = "#ffffff";
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  const scale = Math.min(canvas.width / imageBitmap.width, canvas.height / imageBitmap.height);
+  const w = imageBitmap.width * scale;
+  const h = imageBitmap.height * scale;
+  ctx.drawImage(imageBitmap, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
+  imageBitmap.close();
+}
+
+async function writeBarcodeWithBestSize(payloadText, format) {
+  if (format === CONFIG.BARCODE_FORMATS.QR_CODE) {
+    let lastError = null;
+    for (let v = CONFIG.QR_MIN_VERSION; v <= CONFIG.QR_MAX_VERSION; v++) {
+      try {
+        const out = await ZXingWASM.writeBarcode(payloadText, {
+          format,
+          scale: 4,
+          withQuietZones: true,
+          ecLevel: CONFIG.QR_ERROR_CORRECTION,
+          options: `version=${v},dataMask=${CONFIG.QR_MASK_PATTERN}`,
+        });
+        if (out.image) return out;
+        lastError = new Error(out.error || `QR version ${v} failed.`);
+      } catch (err) {
+        lastError = err;
+      }
+    }
+    throw lastError || new Error("QR payload is too large.");
+  }
+  const out = await ZXingWASM.writeBarcode(payloadText, { format, scale: 4, withQuietZones: true });
+  if (!out.image) throw new Error(out.error || "Barcode generation failed.");
+  return out;
+}
+
+async function openFullscreenQr() {
+  if (!state.latestSession) return;
+  els.qrFullscreenCaption.textContent = state.latestSession.session_name;
+  els.qrFullscreenDialog.showModal();
+  await renderBarcodeToCanvas(
+    JSON.stringify(state.latestSession),
+    els.qrFullscreenCanvas,
+    els.barcodeFormat.value,
+  );
+}
+
+function renderSessionSummary(payload) {
+  els.sessionSummary.innerHTML = `
+    <dl>
+      <div><dt>Name</dt><dd>${escapeHtml(payload.session_name)}</dd></div>
+      <div><dt>Start</dt><dd>${new Date(payload.intended_start_at).toLocaleString()}</dd></div>
+      <div><dt>Grace</dt><dd>${formatGracePeriod(payload.grace_period_minutes)}</dd></div>
+      <div><dt>Location</dt><dd>${Number(payload.creator_lat).toFixed(5)}, ${Number(payload.creator_lon).toFixed(5)}</dd></div>
+    </dl>
+  `;
+}
+
+function formatGracePeriod(value) {
+  const m = Number(value);
+  return m === 0 ? "Indefinite" : `${m} minutes`;
+}
+
+function clearBarcodeDisplay() {
+  if (!els.sessionQr) return;
+  const ctx = els.sessionQr.getContext("2d");
+  ctx?.clearRect(0, 0, els.sessionQr.width, els.sessionQr.height);
+}
+
+// -----------------------------------------------------------------------------
+// Helpers
+// -----------------------------------------------------------------------------
+
+function requireLogin(statusElement) {
+  if (!state.profile) {
+    statusElement.textContent = "Log in with a pass ID before continuing.";
+    return false;
+  }
+  if (state.profile.needs_password_change) {
+    statusElement.textContent = "Set a new password first.";
+    return false;
+  }
+  return true;
+}
+
+async function scanBarcodeFromVideo(video) {
+  if (!window.ZXingWASM) throw new Error("Barcode library failed to load.");
+  if (!video.videoWidth || !video.videoHeight) throw new Error("Camera is not ready yet.");
+  const canvas = document.createElement("canvas");
+  canvas.width = video.videoWidth;
+  canvas.height = video.videoHeight;
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
+  const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+  const results = await ZXingWASM.readBarcodesFromImageData(imageData, {
+    formats: Object.values(CONFIG.BARCODE_FORMATS),
+    maxNumberOfSymbols: 1,
+    textMode: "Plain",
+    tryHarder: true,
+  });
+  const barcode = results[0];
+  if (!barcode?.text) throw new Error("No barcode detected.");
+  return barcode.text;
+}
+
+function parseSessionPayload(scannedText) {
+  let payload;
+  try {
+    payload = JSON.parse(scannedText);
+  } catch {
+    throw new Error("Scanned QR is not a session payload.");
+  }
+  const required = [
+    "session_code", "session_name", "intended_start_at",
+    "grace_period_minutes", "creator_lat", "creator_lon",
+  ];
+  const missing = required.filter((k) => payload[k] === undefined || payload[k] === null || payload[k] === "");
+  if (missing.length) throw new Error("Session QR is missing required fields.");
+  if (!Number.isFinite(new Date(payload.intended_start_at).getTime())) {
+    throw new Error("Session QR contains an invalid start time.");
+  }
+  return payload;
+}
+
+async function getDeviceLocation() {
+  return new Promise((resolve, reject) => {
+    navigator.geolocation.getCurrentPosition(
+      resolve,
+      (err) => reject(new Error(getGeoErrorMessage(err))),
+      CONFIG.GEOLOCATION_OPTIONS,
+    );
+  });
+}
+
+function getGeoErrorMessage(err) {
+  switch (err.code) {
+    case err.PERMISSION_DENIED:
+      return "Geolocation required. Enable location access in browser settings.";
+    case err.POSITION_UNAVAILABLE:
+      return "Location unavailable.";
+    case err.TIMEOUT:
+      return "Location request timed out.";
+    default:
+      return `Could not retrieve location: ${err.message}`;
+  }
+}
+
+function roundCoordinate(value) {
+  return Number(Number(value).toFixed(CONFIG.COORDINATE_DECIMALS));
+}
+
+function setDefaultStartTime() {
+  const date = new Date(Date.now() + 10 * 60 * 1000);
+  date.setSeconds(0, 0);
+  const local = toDateTimeLocalValue(date);
+  els.sessionDate.value = local.slice(0, 10);
+  els.sessionTime.value = local.slice(11, 16);
+}
+
+function toDateTimeLocalValue(date) {
+  const offset = date.getTimezoneOffset() * 60000;
+  return new Date(date.getTime() - offset).toISOString().slice(0, 16);
+}
+
+function toIsoFromDateAndTime(dateValue, timeValue) {
+  if (!dateValue || !timeValue) return "";
+  const d = new Date(`${dateValue}T${timeValue}`);
+  return Number.isFinite(d.getTime()) ? d.toISOString() : "";
+}
+
+function downloadText(filename, text, mimeType) {
+  const blob = new Blob([text], { type: mimeType });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+  link.href = url;
+  link.download = filename;
+  document.body.appendChild(link);
+  link.click();
+  setTimeout(() => {
+    link.remove();
+    URL.revokeObjectURL(url);
+  }, 100);
+}
+
+// Reject any URL whose scheme isn't http/https. Defends against javascript: and
+// data: URLs in admin-authored notification links.
+function sanitiseLinkUrl(raw) {
+  if (typeof raw !== "string" || !raw) return null;
+  try {
+    const u = new URL(raw);
+    if (u.protocol === "http:" || u.protocol === "https:") return u.toString();
+  } catch {
+    /* not a valid URL */
+  }
+  return null;
+}
+
+function escapeHtml(value) {
+  return String(value)
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&#039;");
+}
+
+// Exposed for admin.js to share the helpers without re-implementing.
+window.AttendanceMain = { rpc, getSupabase: () => state.supabase };
