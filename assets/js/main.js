@@ -76,10 +76,6 @@ const app = document.createElement("main");
 app.id = "app";
 app.innerHTML = `
   <header class="app-header">
-    <div>
-      <p class="eyebrow">Attendance</p>
-      <h1>Session check-in</h1>
-    </div>
     <div class="header-actions">
       <button id="settings-toggle" type="button" class="icon-btn" aria-label="Settings" hidden>
         <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor"
@@ -105,17 +101,17 @@ app.innerHTML = `
       <button id="attendance-camera-toggle" type="button">Start camera</button>
       <button id="attendance-scan" type="button" disabled>Scan session QR</button>
     </div>
-    <p class="status-line" id="attendance-status">Log in below, then scan the session QR code.</p>
+    <p class="status-line" id="attendance-status">Scan the session QR code to submit attendance.</p>
   </section>
 
   <section class="zone" id="session-zone" aria-labelledby="session-title">
     <div class="zone-heading">
-      <div><h2 id="session-title">Generate session QR</h2></div>
+      <div><h2 id="session-title">Generate Session</h2></div>
       <button id="restore-session" type="button">Restore latest</button>
     </div>
     <form id="session-form" class="form-grid">
       <label>
-        <span>Session name</span>
+        <span>Session</span>
         <input id="session-name" name="session-name" autocomplete="off" required placeholder="Session Name" />
       </label>
       <label>
@@ -127,22 +123,22 @@ app.innerHTML = `
         <input id="session-time" name="session-time" type="time" required />
       </label>
       <label>
-        <span>Grace period</span>
+        <span>Timeout</span>
         <input id="grace-period" name="grace-period" type="number" min="0" step="1" value="0" required />
       </label>
       <label>
         <span>QR format</span>
+        <!-- Aztec and MaxiCode were dropped: MaxiCode caps at 138 bytes (mode 4)
+             which the session JSON exceeds; Aztec was UI clutter for one-format use. -->
         <select id="barcode-format" name="barcode-format">
           <option value="QRCode">QR Code</option>
-          <option value="Aztec">Aztec</option>
-          <option value="MaxiCode">MaxiCode</option>
         </select>
       </label>
-      <button id="generate-session" type="submit">Generate QR</button>
+      <button id="generate-session" type="submit">Generate QR Code</button>
     </form>
     <div class="qr-layout">
       <canvas id="session-qr"></canvas>
-      <div class="session-summary" id="session-summary">No active generated session restored for this login.</div>
+      <div class="session-summary" id="session-summary">No session generated yet. Use the form above or click "Restore latest".</div>
     </div>
     <div class="action-row">
       <button id="fullscreen-qr" type="button" disabled>Full-screen poster</button>
@@ -151,30 +147,6 @@ app.innerHTML = `
     </div>
     <p class="status-line" id="attendee-total">Total attendees: 0</p>
     <p class="status-line" id="session-status"></p>
-  </section>
-
-  <section class="zone zone-compact" aria-labelledby="login-title">
-    <div class="zone-heading">
-      <div><h2 id="login-title">Pass ID authentication</h2></div>
-      <button id="logout" type="button" hidden>Logout</button>
-    </div>
-    <p class="status-line" id="login-status"></p>
-    <form id="login-form" class="login-form">
-      <label>
-        <span>Pass ID</span>
-        <input id="pass-id" name="pass-id" autocomplete="username" placeholder="e.g. A-001" required />
-      </label>
-      <label>
-        <span>Password</span>
-        <span class="password-field">
-          <input id="password" name="password" type="password" autocomplete="current-password"
-                 placeholder="10-16 characters" required />
-          <button id="password-visibility-toggle" type="button" aria-controls="password" aria-pressed="false">Show</button>
-        </span>
-      </label>
-      <button id="login-submit" type="submit">Log in</button>
-    </form>
-    <div class="profile-strip" id="profile-strip"></div>
   </section>
 
   <div id="admin-mount"></div>
@@ -189,21 +161,52 @@ app.innerHTML = `
     </form>
   </dialog>
 
+  <dialog id="login-dialog">
+    <form id="login-form" class="modal-panel" method="dialog">
+      <h2>Pass ID authentication</h2>
+      <p id="login-status" class="status-line">Sign in with your pass ID.</p>
+      <label>
+        <span>Pass ID</span>
+        <input id="pass-id" name="pass-id" autocomplete="username" placeholder="e.g. A-001" required />
+      </label>
+      <label>
+        <span>Password</span>
+        <span class="password-field">
+          <input id="password" name="password" type="password" autocomplete="current-password"
+                 placeholder="10-16 characters" required />
+          <button id="password-visibility-toggle" type="button" aria-controls="password" aria-pressed="false">Show</button>
+        </span>
+      </label>
+      <menu>
+        <button id="login-submit" type="submit" value="submit">Log in</button>
+      </menu>
+    </form>
+  </dialog>
+
   <dialog id="password-dialog">
     <form id="password-form" class="modal-panel" method="dialog">
       <h2 id="password-dialog-title">Change password</h2>
       <p id="password-dialog-intro" class="status-line"></p>
       <label>
         <span>Current password</span>
-        <input id="password-old" type="password" autocomplete="current-password" required />
+        <span class="password-field">
+          <input id="password-old" type="password" autocomplete="current-password" required />
+          <button id="password-old-toggle" type="button" aria-controls="password-old" aria-pressed="false">Show</button>
+        </span>
       </label>
       <label>
         <span>New password</span>
-        <input id="password-new" type="password" autocomplete="new-password" required />
+        <span class="password-field">
+          <input id="password-new" type="password" autocomplete="new-password" required />
+          <button id="password-new-toggle" type="button" aria-controls="password-new" aria-pressed="false">Show</button>
+        </span>
       </label>
       <label>
         <span>Confirm new password</span>
-        <input id="password-confirm" type="password" autocomplete="new-password" required />
+        <span class="password-field">
+          <input id="password-confirm" type="password" autocomplete="new-password" required />
+          <button id="password-confirm-toggle" type="button" aria-controls="password-confirm" aria-pressed="false">Show</button>
+        </span>
       </label>
       <p class="validation-line" id="password-dialog-validation"></p>
       <menu>
@@ -220,11 +223,13 @@ app.innerHTML = `
         <button id="settings-close" type="button" class="icon-btn" aria-label="Close">&times;</button>
       </header>
       <section class="settings-section">
-        <label class="toggle">
+        <label class="switch">
           <input id="dark-mode-toggle" type="checkbox" />
-          <span>Dark mode</span>
+          <span class="switch-track" aria-hidden="true"></span>
+          <span class="switch-label">Dark mode</span>
         </label>
         <button id="settings-change-password" type="button">Change password</button>
+        <button id="settings-logout" type="button">Log out</button>
       </section>
       <section class="settings-section">
         <h3>Notifications</h3>
@@ -238,6 +243,8 @@ app.innerHTML = `
     <canvas id="qr-fullscreen-canvas"></canvas>
     <p id="qr-fullscreen-caption"></p>
   </dialog>
+
+  <div id="toast-host" aria-live="polite" aria-atomic="true"></div>
 `;
 
 document.body.append(app);
@@ -265,14 +272,13 @@ const els = {
   fullscreenQr: document.getElementById("fullscreen-qr"),
   refreshAttendeeTotal: document.getElementById("refresh-attendee-total"),
   exportCsv: document.getElementById("export-csv"),
+  loginDialog: document.getElementById("login-dialog"),
   loginForm: document.getElementById("login-form"),
   passId: document.getElementById("pass-id"),
   password: document.getElementById("password"),
   passwordVisibilityToggle: document.getElementById("password-visibility-toggle"),
   loginSubmit: document.getElementById("login-submit"),
   loginStatus: document.getElementById("login-status"),
-  profileStrip: document.getElementById("profile-strip"),
-  logout: document.getElementById("logout"),
   confirmDialog: document.getElementById("confirm-dialog"),
   confirmSessionName: document.getElementById("confirm-session-name"),
   confirmSubmit: document.getElementById("confirm-submit"),
@@ -282,8 +288,11 @@ const els = {
   passwordDialogIntro: document.getElementById("password-dialog-intro"),
   passwordForm: document.getElementById("password-form"),
   passwordOld: document.getElementById("password-old"),
+  passwordOldToggle: document.getElementById("password-old-toggle"),
   passwordNew: document.getElementById("password-new"),
+  passwordNewToggle: document.getElementById("password-new-toggle"),
   passwordConfirm: document.getElementById("password-confirm"),
+  passwordConfirmToggle: document.getElementById("password-confirm-toggle"),
   passwordDialogValidation: document.getElementById("password-dialog-validation"),
   passwordCancel: document.getElementById("password-cancel"),
   passwordSubmit: document.getElementById("password-submit"),
@@ -291,12 +300,14 @@ const els = {
   settingsClose: document.getElementById("settings-close"),
   darkModeToggle: document.getElementById("dark-mode-toggle"),
   settingsChangePassword: document.getElementById("settings-change-password"),
+  settingsLogout: document.getElementById("settings-logout"),
   notificationsList: document.getElementById("notifications-list"),
   qrFullscreenDialog: document.getElementById("qr-fullscreen-dialog"),
   qrFullscreenClose: document.getElementById("qr-fullscreen-close"),
   qrFullscreenCanvas: document.getElementById("qr-fullscreen-canvas"),
   qrFullscreenCaption: document.getElementById("qr-fullscreen-caption"),
   adminMount: document.getElementById("admin-mount"),
+  toastHost: document.getElementById("toast-host"),
 };
 
 let pendingSessionPayload = null;
@@ -411,7 +422,8 @@ async function onAuthenticated() {
         mountEl: els.adminMount,
       });
     }
-    restoreLatestSession();
+    // Note: latest session is NOT auto-restored on login/refresh.
+    // The user must click "Restore latest" explicitly.
   } catch (err) {
     els.loginStatus.textContent = err.message;
   }
@@ -426,36 +438,39 @@ function renderLoggedOut() {
     state.supabase.removeChannel(state.notificationsChannel);
     state.notificationsChannel = null;
   }
-  els.logout.hidden = true;
   els.settingsToggle.hidden = true;
-  els.profileStrip.textContent = "";
   els.attendanceLoginStatus.textContent = "Not logged in";
-  els.loginStatus.textContent = "Log in with a pre-provisioned pass ID.";
   els.passId.value = "";
   els.password.value = "";
+  els.loginStatus.textContent = "Sign in with your pass ID.";
   els.fullscreenQr.disabled = true;
   els.refreshAttendeeTotal.disabled = true;
   els.exportCsv.disabled = true;
   els.attendeeTotal.textContent = "Total attendees: 0";
+  els.sessionStatus.textContent = "";
+  els.sessionSummary.textContent = "No session generated yet. Use the form above or click \"Restore latest\".";
+  els.sessionZone.hidden = false; // visible logged-out, requireLogin gates submit
   if (window.AttendanceAdmin?.unmount) window.AttendanceAdmin.unmount();
   clearBarcodeDisplay();
+  closeIfOpen(els.passwordDialog);
+  closeIfOpen(els.settingsDialog);
+  if (!els.loginDialog.open) els.loginDialog.showModal();
 }
 
 function renderLoggedIn(profile) {
-  els.logout.hidden = false;
+  closeIfOpen(els.loginDialog);
   els.settingsToggle.hidden = false;
   els.passId.value = profile.pass_id ?? "";
   els.password.value = "";
-  // Session generation card is always visible. Server-side role check in
-  // create_attendance_session RPC rejects unauthorised submissions.
-  els.profileStrip.textContent = [
-    `Campus: ${profile.campus ?? "—"}`,
-    `Group: ${profile.group_name ?? "—"}`,
-    `Sub-group: ${profile.sub_group ?? "—"}`,
-    `Role: ${profile.role}`,
-  ].join(" / ");
+  // Hide the Generate-Session card entirely for the plain `user` role.
+  // Server-side `create_attendance_session` still rejects unauthorised
+  // creators as a backstop.
+  els.sessionZone.hidden = profile.role === "user";
   els.attendanceLoginStatus.textContent = `Logged in: ${profile.pass_id ?? profile.profile_id}`;
-  els.loginStatus.textContent = `Logged in as ${profile.pass_id ?? profile.profile_id}.`;
+}
+
+function closeIfOpen(dialogEl) {
+  if (dialogEl?.open) dialogEl.close();
 }
 
 // -----------------------------------------------------------------------------
@@ -473,8 +488,24 @@ function attachEventListeners() {
   els.refreshAttendeeTotal.addEventListener("click", refreshAttendeeTotal);
   els.exportCsv.addEventListener("click", handleCsvExport);
   els.loginForm.addEventListener("submit", handleAuthSubmit);
-  els.passwordVisibilityToggle.addEventListener("click", togglePasswordVisibility);
-  els.logout.addEventListener("click", handleLogout);
+  els.passwordVisibilityToggle.addEventListener("click", () =>
+    toggleFieldVisibility(els.password, els.passwordVisibilityToggle),
+  );
+  // Login dialog is non-dismissable: Esc fires `cancel`, we suppress it.
+  els.loginDialog.addEventListener("cancel", (event) => {
+    event.preventDefault();
+  });
+  els.settingsLogout.addEventListener("click", handleLogout);
+  // Per-field show/hide toggles in the change-password modal.
+  els.passwordOldToggle.addEventListener("click", () =>
+    toggleFieldVisibility(els.passwordOld, els.passwordOldToggle),
+  );
+  els.passwordNewToggle.addEventListener("click", () =>
+    toggleFieldVisibility(els.passwordNew, els.passwordNewToggle),
+  );
+  els.passwordConfirmToggle.addEventListener("click", () =>
+    toggleFieldVisibility(els.passwordConfirm, els.passwordConfirmToggle),
+  );
   els.confirmSubmit.addEventListener("click", (event) => {
     event.preventDefault();
     submitPendingAttendance();
@@ -566,6 +597,7 @@ async function handleAuthSubmit(event) {
 }
 
 async function handleLogout() {
+  closeIfOpen(els.settingsDialog);
   await state.supabase.auth.signOut();
   // Drop app-local non-auth state. (Supabase's own keys are cleared by signOut.)
   for (const key of Object.values(STORAGE_KEYS)) {
@@ -575,11 +607,11 @@ async function handleLogout() {
   }
 }
 
-function togglePasswordVisibility() {
-  const isVisible = els.password.type === "text";
-  els.password.type = isVisible ? "password" : "text";
-  els.passwordVisibilityToggle.textContent = isVisible ? "Show" : "Hide";
-  els.passwordVisibilityToggle.setAttribute("aria-pressed", String(!isVisible));
+function toggleFieldVisibility(inputEl, toggleBtn) {
+  const isVisible = inputEl.type === "text";
+  inputEl.type = isVisible ? "password" : "text";
+  toggleBtn.textContent = isVisible ? "Show" : "Hide";
+  toggleBtn.setAttribute("aria-pressed", String(!isVisible));
 }
 
 // -----------------------------------------------------------------------------
@@ -646,8 +678,27 @@ async function handlePasswordSubmit() {
 
   closePasswordDialog();
   forcedPasswordChange = false;
+  showToast("Password updated.");
   // Refresh profile + render.
   await onAuthenticated();
+}
+
+// -----------------------------------------------------------------------------
+// Toast
+// -----------------------------------------------------------------------------
+
+function showToast(message, durationMs = 3000) {
+  const el = document.createElement("div");
+  el.className = "toast";
+  el.role = "status";
+  el.textContent = message;
+  els.toastHost.append(el);
+  // Trigger transition: rAF so the initial opacity:0 is committed first.
+  requestAnimationFrame(() => el.classList.add("toast-visible"));
+  setTimeout(() => {
+    el.classList.remove("toast-visible");
+    setTimeout(() => el.remove(), 400);
+  }, durationMs);
 }
 
 // -----------------------------------------------------------------------------
@@ -780,9 +831,11 @@ async function submitPendingAttendance() {
   pendingSessionPayload = null;
   els.confirmDialog.close();
 
+  els.attendanceScan.disabled = true;
   try {
     els.attendanceStatus.textContent = "Getting submitter location...";
     const position = await getDeviceLocation();
+    els.attendanceStatus.textContent = "Submitting attendance...";
     const result = await rpc("submit_attendance", {
       p_session_payload: payload,
       p_device_install_id: state.deviceInstallId,
@@ -793,6 +846,8 @@ async function submitPendingAttendance() {
     els.attendanceStatus.textContent = `Submitted attendance for ${payload.session_name}. Status: ${result.status || "accepted"}.${flags}`;
   } catch (error) {
     els.attendanceStatus.textContent = error.message || "Attendance submission failed.";
+  } finally {
+    els.attendanceScan.disabled = !state.attendanceCamera.isActive;
   }
 }
 
@@ -810,9 +865,12 @@ async function handleSessionCreate(event) {
     return;
   }
 
+  const submitBtn = event.submitter ?? document.getElementById("generate-session");
+  submitBtn.disabled = true;
   try {
     els.sessionStatus.textContent = "Getting creator location...";
     const position = await getDeviceLocation();
+    els.sessionStatus.textContent = "Generating QR code...";
     const payload = await rpc("create_attendance_session", {
       p_code: crypto.randomUUID(),
       p_name: els.sessionName.value.trim(),
@@ -834,6 +892,8 @@ async function handleSessionCreate(event) {
     await refreshAttendeeTotal();
   } catch (error) {
     els.sessionStatus.textContent = error.message || "Could not create session.";
+  } finally {
+    submitBtn.disabled = false;
   }
 }
 
@@ -1054,7 +1114,7 @@ function roundCoordinate(value) {
 }
 
 function setDefaultStartTime() {
-  const date = new Date(Date.now() + 10 * 60 * 1000);
+  const date = new Date();
   date.setSeconds(0, 0);
   const local = toDateTimeLocalValue(date);
   els.sessionDate.value = local.slice(0, 10);

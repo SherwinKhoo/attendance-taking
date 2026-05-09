@@ -26,6 +26,29 @@
     auditOffset: 0,
   };
 
+  // Disable a button while an async handler runs and surface its error to the
+  // given target. Eliminates the silent-failure path where an uncaught
+  // rejection left the button visually responsive but functionally inert.
+  async function withButtonGuard(buttonEl, asyncFn, errorTargetEl) {
+    if (!buttonEl) return asyncFn();
+    if (buttonEl.disabled) return; // already in flight
+    buttonEl.disabled = true;
+    try {
+      await asyncFn();
+    } catch (err) {
+      const message = err?.message ?? String(err);
+      if (errorTargetEl) {
+        errorTargetEl.hidden = false;
+        errorTargetEl.textContent = `Error: ${message}`;
+      } else {
+        // Fall through to console as a last resort.
+        console.error("[admin]", message);
+      }
+    } finally {
+      buttonEl.disabled = false;
+    }
+  }
+
   function mount({ supabase, profile, rpc, mountEl }) {
     state.supabase = supabase;
     state.profile = profile;
@@ -75,10 +98,38 @@
       </div>
 
       <div class="admin-section">
-        <h3>Provision</h3>
-        <p class="status-line">CSV header: <code>pass_id,role,campus,group_name,sub_group,display_name</code>. Only <code>pass_id</code> and <code>role</code> are required.</p>
+        <h3>Add single account</h3>
+        <div class="admin-row">
+          <input id="admin-single-pass-id" type="text" placeholder="Pass ID" />
+          <select id="admin-single-role">
+            <option value="">Role…</option>
+            <option value="user">user</option>
+            <option value="representative">representative</option>
+            <option value="coordinator">coordinator</option>
+            <option value="admin">admin</option>
+          </select>
+        </div>
+        <div class="admin-row">
+          <input id="admin-single-campus" type="text" placeholder="Campus" value="${state.profile.admin_campus_scope ?? ""}" />
+          <input id="admin-single-group" type="text" placeholder="Group" />
+          <input id="admin-single-subgroup" type="text" placeholder="Sub-group" />
+        </div>
+        <div class="admin-row">
+          <input id="admin-single-display-name" type="text" placeholder="Display name (optional)" />
+          <label class="toggle">
+            <input id="admin-single-ingest-name" type="checkbox" />
+            <span>Ingest name</span>
+          </label>
+          <button id="admin-single-submit" type="button">Add</button>
+        </div>
+        <pre id="admin-single-result" class="admin-output" hidden></pre>
+      </div>
+
+      <div class="admin-section">
+        <h3>Provision (CSV batch)</h3>
+        <p class="status-line">Required columns: <code>pass_id, role, campus, group_name, sub_group</code>. Optional: <code>display_name</code> (only ingested when the toggle below is on).</p>
         <textarea id="admin-provision-csv" rows="8" placeholder="pass_id,role,campus,group_name,sub_group,display_name
-X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},,,"></textarea>
+X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></textarea>
         <label class="toggle">
           <input id="admin-provision-ingest-names" type="checkbox" />
           <span>Ingest display_name from CSV (default: drop)</span>
@@ -138,24 +189,88 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},,,"></textarea>
     state.mountEl.append(root);
     state.root = root;
 
-    document.getElementById("admin-temp-refresh").addEventListener("click", refreshTodaysTemp);
-    document.getElementById("admin-unclaimed-refresh").addEventListener("click", refreshUnclaimed);
-    document.getElementById("admin-provision-submit").addEventListener("click", handleProvision);
+    bind("admin-temp-refresh", refreshTodaysTemp, "admin-temp-display");
+    bind("admin-unclaimed-refresh", refreshUnclaimed, "admin-unclaimed-list");
+    bind("admin-single-submit", handleSingleAdd, "admin-single-result");
+    bind("admin-provision-submit", handleProvision, "admin-provision-result");
     document.getElementById("admin-provision-file").addEventListener("change", handleProvisionFile);
-    document.getElementById("admin-revoke-submit").addEventListener("click", handleRevoke);
-    document.getElementById("admin-notif-submit").addEventListener("click", handleNotify);
-    document.getElementById("admin-audit-prev").addEventListener("click", () => {
+    bind("admin-revoke-submit", handleRevoke, "admin-revoke-result");
+    bind("admin-notif-submit", handleNotify, "admin-notif-status");
+    bind("admin-audit-prev", () => {
       state.auditOffset = Math.max(0, state.auditOffset - 100);
-      refreshAudit();
-    });
-    document.getElementById("admin-audit-next").addEventListener("click", () => {
+      return refreshAudit();
+    }, "admin-audit-list");
+    bind("admin-audit-next", () => {
       state.auditOffset += 100;
-      refreshAudit();
-    });
-    document.getElementById("admin-audit-refresh").addEventListener("click", () => {
+      return refreshAudit();
+    }, "admin-audit-list");
+    bind("admin-audit-refresh", () => {
       state.auditOffset = 0;
-      refreshAudit();
+      return refreshAudit();
+    }, "admin-audit-list");
+  }
+
+  function bind(buttonId, handler, errorTargetId) {
+    const button = document.getElementById(buttonId);
+    const errorTarget = errorTargetId ? document.getElementById(errorTargetId) : null;
+    button.addEventListener("click", () => withButtonGuard(button, handler, errorTarget));
+  }
+
+  // ---------------------------------------------------------------------------
+  // Single-add
+  // ---------------------------------------------------------------------------
+
+  async function handleSingleAdd() {
+    const passId = document.getElementById("admin-single-pass-id").value.trim().toUpperCase();
+    const role = document.getElementById("admin-single-role").value;
+    const campus = document.getElementById("admin-single-campus").value.trim().toUpperCase();
+    const groupName = document.getElementById("admin-single-group").value.trim();
+    const subGroup = document.getElementById("admin-single-subgroup").value.trim();
+    const displayName = document.getElementById("admin-single-display-name").value.trim();
+    const ingestName = document.getElementById("admin-single-ingest-name").checked;
+    const result = document.getElementById("admin-single-result");
+    result.hidden = false;
+
+    const missing = [];
+    if (!passId) missing.push("pass_id");
+    if (!role) missing.push("role");
+    if (!campus) missing.push("campus");
+    if (!groupName) missing.push("group_name");
+    if (!subGroup) missing.push("sub_group");
+    if (missing.length > 0) {
+      result.textContent = `Missing required fields: ${missing.join(", ")}.`;
+      return;
+    }
+
+    result.textContent = "Calling provision function...";
+    const { data, error } = await state.supabase.functions.invoke("provision", {
+      body: {
+        ingest_names: ingestName,
+        rows: [
+          {
+            pass_id: passId,
+            role,
+            campus,
+            group_name: groupName,
+            sub_group: subGroup,
+            display_name: displayName || null,
+          },
+        ],
+      },
     });
+    if (error) {
+      result.textContent = `provision failed: ${error.message}`;
+      return;
+    }
+    result.textContent = JSON.stringify(data, null, 2);
+
+    // Clear pass-ID and role for the next add; keep campus/group/sub-group as
+    // sticky defaults since the admin is usually adding multiples in a row.
+    document.getElementById("admin-single-pass-id").value = "";
+    document.getElementById("admin-single-display-name").value = "";
+
+    refreshTodaysTemp();
+    refreshUnclaimed();
   }
 
   // ---------------------------------------------------------------------------

@@ -9,43 +9,51 @@ import { test, expect } from "@playwright/test";
 //   * Static site served at http://localhost:8011/.
 //   * Seed credentials: U-001 / Proto-Pass!1 (pre-claimed, no forced change).
 
-test("pass-ID login signs in, persists across reload, and logs out", async ({ page }) => {
+test("login dialog blocks until valid credentials, persists across reload, and logs out from settings", async ({ page }) => {
   const errors = [];
   page.on("pageerror", (error) => errors.push(error.message));
 
   await page.goto("http://localhost:8011/", { waitUntil: "domcontentloaded" });
-  await expect(page.locator("#login-title")).toHaveText("Pass ID authentication");
-  await expect(page.locator("#login-submit")).toHaveText("Log in");
-  await expect(page.locator("#logout")).toBeHidden();
+
+  // Login dialog opens automatically when no session exists; settings icon hidden.
+  const loginDialog = page.locator("#login-dialog");
+  await expect(loginDialog).toBeVisible();
   await expect(page.locator("#settings-toggle")).toBeHidden();
 
-  // Wrong password → generic failure.
+  // Wrong password → dialog stays.
   await page.fill("#pass-id", "U-001");
   await page.fill("#password", "Wrong-Pass!1");
   await page.click("#login-submit");
+  await expect(loginDialog).toBeVisible();
   await expect(page.locator("#login-status")).toContainText("incorrect");
 
-  // Correct password → logged in.
+  // Correct password → dialog closes, app appears, settings icon shows.
   await page.fill("#password", "Proto-Pass!1");
   await page.click("#login-submit");
-  await expect(page.locator("#attendance-login-status")).toContainText("U-001", { timeout: 5000 });
-  await expect(page.locator("#logout")).toBeVisible();
+  await expect(loginDialog).toBeHidden({ timeout: 5000 });
+  await expect(page.locator("#attendance-login-status")).toContainText("U-001");
   await expect(page.locator("#settings-toggle")).toBeVisible();
 
   // Persistence across reload (Supabase Auth refresh in localStorage).
   await page.reload({ waitUntil: "domcontentloaded" });
   await expect(page.locator("#attendance-login-status")).toContainText("U-001", { timeout: 5000 });
+  await expect(loginDialog).toBeHidden();
 
-  // Logout clears the session.
-  await page.click("#logout");
-  await expect(page.locator("#attendance-login-status")).toHaveText("Not logged in", { timeout: 5000 });
-  await expect(page.locator("#logout")).toBeHidden();
+  // Logout from settings menu.
+  await page.click("#settings-toggle");
+  await expect(page.locator("#settings-dialog")).toBeVisible();
+  await expect(page.locator("#settings-logout")).toBeVisible();
+  await page.click("#settings-logout");
+
+  // Settings dialog closes; login dialog reopens.
+  await expect(page.locator("#settings-dialog")).toBeHidden({ timeout: 5000 });
+  await expect(loginDialog).toBeVisible({ timeout: 5000 });
   await expect(page.locator("#settings-toggle")).toBeHidden();
 
   expect(errors).toEqual([]);
 });
 
-test("settings dialog opens with dark mode toggle and change-password button", async ({ page }) => {
+test("settings dialog opens with dark-mode switch, change-password, log-out, and notifications inbox", async ({ page }) => {
   await page.goto("http://localhost:8011/", { waitUntil: "domcontentloaded" });
   await page.fill("#pass-id", "U-001");
   await page.fill("#password", "Proto-Pass!1");
@@ -53,7 +61,19 @@ test("settings dialog opens with dark mode toggle and change-password button", a
   await expect(page.locator("#settings-toggle")).toBeVisible({ timeout: 5000 });
 
   await page.click("#settings-toggle");
-  await expect(page.locator("#dark-mode-toggle")).toBeVisible();
+  await expect(page.locator("#dark-mode-toggle")).toBeAttached();
   await expect(page.locator("#settings-change-password")).toBeVisible();
+  await expect(page.locator("#settings-logout")).toBeVisible();
   await expect(page.locator("#notifications-list")).toBeVisible();
+});
+
+test("session card hides for the user role", async ({ page }) => {
+  await page.goto("http://localhost:8011/", { waitUntil: "domcontentloaded" });
+  await page.fill("#pass-id", "U-001");
+  await page.fill("#password", "Proto-Pass!1");
+  await page.click("#login-submit");
+  await expect(page.locator("#attendance-login-status")).toContainText("U-001", { timeout: 5000 });
+
+  // Generate-Session card should be hidden for role 'user'.
+  await expect(page.locator("#session-zone")).toBeHidden();
 });

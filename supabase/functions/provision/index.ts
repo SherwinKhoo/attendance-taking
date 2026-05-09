@@ -39,9 +39,9 @@ type Role = typeof VALID_ROLES[number];
 interface ProvisionRow {
   pass_id: string;
   role: Role;
-  campus?: string;
-  group_name?: string | null;
-  sub_group?: string | null;
+  campus: string;
+  group_name: string;
+  sub_group: string;
   display_name?: string | null;
 }
 
@@ -87,18 +87,31 @@ function validateRow(row: unknown, rowIndex: number): ProvisionRow {
 
   const campus = typeof r.campus === "string" && r.campus.trim()
     ? r.campus.trim().toUpperCase()
-    : undefined;
+    : "";
+  if (!campus) {
+    throw new Error(`Row ${rowIndex}: campus is required.`);
+  }
+
+  const group_name = typeof r.group_name === "string" && r.group_name.trim()
+    ? r.group_name.trim()
+    : "";
+  if (!group_name) {
+    throw new Error(`Row ${rowIndex}: group_name is required.`);
+  }
+
+  const sub_group = typeof r.sub_group === "string" && r.sub_group.trim()
+    ? r.sub_group.trim()
+    : "";
+  if (!sub_group) {
+    throw new Error(`Row ${rowIndex}: sub_group is required.`);
+  }
 
   return {
     pass_id,
     role: role as Role,
     campus,
-    group_name: typeof r.group_name === "string" && r.group_name.trim()
-      ? r.group_name.trim()
-      : null,
-    sub_group: typeof r.sub_group === "string" && r.sub_group.trim()
-      ? r.sub_group.trim()
-      : null,
+    group_name,
+    sub_group,
     display_name: typeof r.display_name === "string" && r.display_name.trim()
       ? r.display_name.trim()
       : null,
@@ -162,17 +175,9 @@ Deno.serve(async (req: Request) => {
       continue;
     }
 
-    // Resolve target campus: row campus, else caller scope, else error.
-    const targetCampus = row.campus ?? caller.admin_campus_scope ?? null;
-    if (!targetCampus) {
-      errors.push({
-        row_index: idx,
-        pass_id: row.pass_id,
-        campus: "",
-        message: "campus is required for a global admin.",
-      });
-      continue;
-    }
+    // Campus is now mandatory per row (enforced by validateRow above); no
+    // fall-back to admin scope. Per-campus admin scope is still verified next.
+    const targetCampus = row.campus;
 
     // Verify scope.
     try {

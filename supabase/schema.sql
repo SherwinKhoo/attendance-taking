@@ -65,9 +65,9 @@ create table public.profiles (
   pass_id text,
   role text not null default 'user'
     check (role in ('user', 'representative', 'coordinator', 'admin')),
-  campus text references public.campuses(code) on update cascade,
-  group_name text,
-  sub_group text,
+  campus text not null references public.campuses(code) on update cascade,
+  group_name text not null,
+  sub_group text not null,
   display_name text,
   -- For admin role: NULL = global scope (developer); set = restricted to one campus.
   admin_campus_scope text references public.campuses(code) on update cascade,
