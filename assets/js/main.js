@@ -91,7 +91,7 @@ app.innerHTML = `
     Connection lost. Submissions will fail until you reconnect.
   </div>
 
-  <section class="zone" aria-labelledby="attendance-title">
+  <section class="zone" id="attendance-zone" aria-labelledby="attendance-title">
     <div class="zone-heading">
       <div><h2 id="attendance-title">Submit attendance</h2></div>
       <span class="status" id="attendance-login-status"></span>
@@ -257,6 +257,7 @@ const els = {
   attendanceCameraToggle: document.getElementById("attendance-camera-toggle"),
   attendanceScan: document.getElementById("attendance-scan"),
   attendanceStatus: document.getElementById("attendance-status"),
+  attendanceZone: document.getElementById("attendance-zone"),
   sessionZone: document.getElementById("session-zone"),
   sessionForm: document.getElementById("session-form"),
   sessionName: document.getElementById("session-name"),
@@ -312,6 +313,10 @@ const els = {
 
 let pendingSessionPayload = null;
 let forcedPasswordChange = false;
+// Suppress onAuthStateChange re-entry while the password-change flow is
+// running — re-auth + updateUser fire SIGNED_IN/USER_UPDATED events that
+// would otherwise re-open the dialog before mark_password_set has run.
+let passwordChangeInProgress = false;
 
 // -----------------------------------------------------------------------------
 // Bootstrap
@@ -388,6 +393,7 @@ async function bootstrapAuth() {
     if (event === "SIGNED_OUT") {
       renderLoggedOut();
     } else if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED" || event === "USER_UPDATED") {
+      if (passwordChangeInProgress) return;
       await onAuthenticated();
     }
   });
@@ -449,7 +455,8 @@ function renderLoggedOut() {
   els.attendeeTotal.textContent = "Total attendees: 0";
   els.sessionStatus.textContent = "";
   els.sessionSummary.textContent = "No session generated yet. Use the form above or click \"Restore latest\".";
-  els.sessionZone.hidden = false; // visible logged-out, requireLogin gates submit
+  els.attendanceZone.hidden = true;
+  els.sessionZone.hidden = true;
   if (window.AttendanceAdmin?.unmount) window.AttendanceAdmin.unmount();
   clearBarcodeDisplay();
   closeIfOpen(els.passwordDialog);
@@ -462,6 +469,7 @@ function renderLoggedIn(profile) {
   els.settingsToggle.hidden = false;
   els.passId.value = profile.pass_id ?? "";
   els.password.value = "";
+  els.attendanceZone.hidden = false;
   // Hide the Generate-Session card entirely for the plain `user` role.
   // Server-side `create_attendance_session` still rejects unauthorised
   // creators as a backstop.
@@ -646,40 +654,47 @@ async function handlePasswordSubmit() {
     return;
   }
 
-  // Verify old password by re-authenticating. signInWithPassword refreshes the
-  // session on success and yields a clear error on failure, without requiring
-  // a separate "verify only" RPC.
   const passId = state.profile?.pass_id || els.passId.value.trim().toUpperCase();
   if (!passId) {
     els.passwordDialogValidation.textContent = "Pass ID unknown — please log in again.";
     return;
   }
-  const { error: reauthErr } = await state.supabase.auth.signInWithPassword({
-    email: syntheticEmail(passId),
-    password: oldPassword,
-  });
-  if (reauthErr) {
-    els.passwordDialogValidation.textContent = "Current password is incorrect.";
-    return;
-  }
 
-  const { error: updateErr } = await state.supabase.auth.updateUser({ password: newPassword });
-  if (updateErr) {
-    els.passwordDialogValidation.textContent = updateErr.message;
-    return;
-  }
-
+  passwordChangeInProgress = true;
   try {
-    await rpc("mark_password_set");
-  } catch (err) {
-    els.passwordDialogValidation.textContent = err.message;
-    return;
-  }
+    // Verify old password by re-authenticating. signInWithPassword refreshes
+    // the session on success and yields a clear error on failure, without
+    // requiring a separate "verify only" RPC.
+    const { error: reauthErr } = await state.supabase.auth.signInWithPassword({
+      email: syntheticEmail(passId),
+      password: oldPassword,
+    });
+    if (reauthErr) {
+      els.passwordDialogValidation.textContent = "Current password is incorrect.";
+      return;
+    }
 
-  closePasswordDialog();
-  forcedPasswordChange = false;
-  showToast("Password updated.");
-  // Refresh profile + render.
+    const { error: updateErr } = await state.supabase.auth.updateUser({ password: newPassword });
+    if (updateErr) {
+      els.passwordDialogValidation.textContent = updateErr.message;
+      return;
+    }
+
+    try {
+      await rpc("mark_password_set");
+    } catch (err) {
+      els.passwordDialogValidation.textContent = err.message;
+      return;
+    }
+
+    closePasswordDialog();
+    forcedPasswordChange = false;
+    showToast("Password changed.");
+  } finally {
+    passwordChangeInProgress = false;
+  }
+  // Refresh profile + render after the guard is released so the resulting
+  // render reflects the post-change profile.
   await onAuthenticated();
 }
 

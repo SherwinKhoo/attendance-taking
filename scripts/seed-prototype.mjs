@@ -14,8 +14,17 @@
 // You can find the service role key in the Supabase dashboard under
 // Project Settings → API → "service_role" (NOT the anon key).
 //
-// The script is idempotent: re-running upserts profiles and updates the
-// password to the dev value.
+// The script is idempotent: re-running upserts profiles, resets the auth
+// passwords to the values below, and resets password_set_at to NULL so all
+// four accounts re-enter the forced password-change flow on next sign-in.
+//
+// PROTO is a zero-stakes onboarding/testing campus that mimics production:
+//   - A-001 (admin) is given a memorable password (`ADMIN_PASSWORD`) so the
+//     operator always has a known way in. It is NOT pre-claimed.
+//   - C-001 / R-001 / U-001 are given the campus's current daily temp via
+//     ensure_today_temp() — exactly what `provision` would assign — and are
+//     left unclaimed (password_set_at = NULL).
+//   - All four are forced through the password-change flow on first login.
 
 import { createClient } from "@supabase/supabase-js";
 
@@ -30,7 +39,7 @@ const supabase = createClient(SUPABASE_URL, SERVICE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
 
-const DEV_PASSWORD = "Proto-Pass!1";
+const ADMIN_PASSWORD = "Password.123";
 const CAMPUS = { code: "PROTO", name: "Prototype Campus", timezone: "Asia/Singapore" };
 
 const SEED_USERS = [
@@ -40,9 +49,48 @@ const SEED_USERS = [
   { pass_id: "U-001", role: "user",           sub_group: "User Group",           display_name: "Prototype User" },
 ];
 
+// Mirror of supabase/functions/_shared/password.ts:generateTempPassword.
+// Keep in sync if the production generator changes (charset, length bounds).
+const PW_UPPER = "ABCDEFGHJKLMNPQRSTUVWXYZ";
+const PW_LOWER = "abcdefghjkmnpqrstuvwxyz";
+const PW_DIGIT = "23456789";
+const PW_SYMBOL = "!@#$%^&*._-";
+const PW_ALL = PW_UPPER + PW_LOWER + PW_DIGIT + PW_SYMBOL;
+
+function pickChar(charset) {
+  const buf = new Uint32Array(1);
+  globalThis.crypto.getRandomValues(buf);
+  return charset.charAt(buf[0] % charset.length);
+}
+
+function generateTempPassword(length = 12) {
+  if (length < 10 || length > 16) throw new Error("Temp password length must be 10-16.");
+  const chars = [pickChar(PW_UPPER), pickChar(PW_LOWER), pickChar(PW_DIGIT), pickChar(PW_SYMBOL)];
+  for (let i = chars.length; i < length; i++) chars.push(pickChar(PW_ALL));
+  for (let i = chars.length - 1; i > 0; i--) {
+    const buf = new Uint32Array(1);
+    globalThis.crypto.getRandomValues(buf);
+    const j = buf[0] % (i + 1);
+    [chars[i], chars[j]] = [chars[j], chars[i]];
+  }
+  return chars.join("");
+}
+
 async function ensureCampus() {
   const { error } = await supabase.from("campuses").upsert(CAMPUS);
   if (error) throw new Error(`campus upsert failed: ${error.message}`);
+}
+
+async function ensureCampusTemp() {
+  const candidate = generateTempPassword();
+  const { data, error } = await supabase.rpc("ensure_today_temp", {
+    p_campus: CAMPUS.code,
+    p_candidate_temp: candidate,
+  });
+  if (error || !data) {
+    throw new Error(`ensure_today_temp failed: ${error?.message ?? "no data"}`);
+  }
+  return data.temp_password;
 }
 
 async function findExistingByEmail(email) {
@@ -55,20 +103,21 @@ async function findExistingByEmail(email) {
   return data.users.find((u) => u.email?.toLowerCase() === email.toLowerCase());
 }
 
-async function ensureUser(seed) {
+async function ensureUser(seed, { tempPassword }) {
   const email = `${seed.pass_id.toLowerCase()}@passid.local`;
+  const password = seed.role === "admin" ? ADMIN_PASSWORD : tempPassword;
   let user = await findExistingByEmail(email);
 
   if (user) {
     const { error: updErr } = await supabase.auth.admin.updateUserById(user.id, {
-      password: DEV_PASSWORD,
+      password,
       email_confirm: true,
     });
     if (updErr) throw new Error(`update failed: ${updErr.message}`);
   } else {
     const { data, error: createErr } = await supabase.auth.admin.createUser({
       email,
-      password: DEV_PASSWORD,
+      password,
       email_confirm: true,
     });
     if (createErr) throw new Error(`create failed: ${createErr.message}`);
@@ -84,7 +133,7 @@ async function ensureUser(seed) {
     sub_group: seed.sub_group,
     display_name: seed.display_name,
     admin_campus_scope: null, // global admin for A-001
-    password_set_at: new Date().toISOString(), // pre-claimed
+    password_set_at: null,    // unclaimed: forced change on first sign-in
   };
 
   const { error: upsertErr } = await supabase
@@ -99,13 +148,20 @@ async function main() {
   console.log("Ensuring campus...");
   await ensureCampus();
 
+  console.log("Ensuring today's PROTO temp password...");
+  const tempPassword = await ensureCampusTemp();
+
   for (const seed of SEED_USERS) {
     process.stdout.write(`Seeding ${seed.pass_id}... `);
-    const result = await ensureUser(seed);
+    const result = await ensureUser(seed, { tempPassword });
     console.log(`ok (${result.profile_id})`);
   }
 
-  console.log(`\nDone. Sign in with any pass-ID + password: ${DEV_PASSWORD}`);
+  console.log(`
+Done.
+  - Admin (A-001): ${ADMIN_PASSWORD}
+  - All other seeded accounts (C-001, R-001, U-001): today's PROTO temp = ${tempPassword}
+All four accounts will be prompted to change password on first sign-in.`);
 }
 
 main().catch((err) => {
