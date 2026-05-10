@@ -606,13 +606,22 @@ async function handleAuthSubmit(event) {
 
 async function handleLogout() {
   closeIfOpen(els.settingsDialog);
-  await state.supabase.auth.signOut();
+  // Local scope: revoke only this client's session. Avoids the failure mode
+  // where a stale access token (e.g. after a destructive schema reapply)
+  // makes a global signOut throw and never emit SIGNED_OUT.
+  try {
+    await state.supabase.auth.signOut({ scope: "local" });
+  } catch (err) {
+    console.warn("[auth] signOut error (continuing):", err);
+  }
   // Drop app-local non-auth state. (Supabase's own keys are cleared by signOut.)
   for (const key of Object.values(STORAGE_KEYS)) {
     if (key === STORAGE_KEYS.deviceInstallId) continue; // keep device id stable
     if (key === STORAGE_KEYS.darkMode) continue;        // user UI preference
     localStorage.removeItem(key);
   }
+  // Force the logged-out UI even if SIGNED_OUT didn't fire.
+  renderLoggedOut();
 }
 
 function toggleFieldVisibility(inputEl, toggleBtn) {
