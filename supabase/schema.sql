@@ -1433,6 +1433,16 @@ begin
 end $$;
 
 -- -----------------------------------------------------------------------------
+-- Final sweep: drop orphan synthetic-email auth.users left over from earlier
+-- runs. The destructive drops above wipe public.profiles cascade but leave
+-- auth.users intact, so every reapply would otherwise inherit stale orphans
+-- that block re-provisioning ("A user with this email address has already
+-- been registered"). Running the cleanup here means a fresh schema.sql
+-- application is self-sufficient — no separate manual cleanup step needed.
+-- -----------------------------------------------------------------------------
+select public.cleanup_orphaned_synthetic_auth_users();
+
+-- -----------------------------------------------------------------------------
 -- pg_cron schedule (commented; enable after rotate-daily Edge Function deploys)
 -- -----------------------------------------------------------------------------
 -- The rotation Edge Function checks each campus's local time and acts only when

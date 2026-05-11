@@ -576,17 +576,20 @@ async function onAuthenticated() {
     // Note: latest session is NOT auto-restored on login/refresh.
     // The user must click "Restore latest" explicitly.
   } catch (err) {
-    // Transient error (most often a withTimeout reject). Do NOT call
-    // renderLoggedOut here — that path is reserved for the genuine
-    // "profile row no longer exists" case handled above. A 15 s RPC
-    // timeout on tab wake-up is not a logout signal; the existing
-    // session is still valid and the next interaction will likely
-    // succeed.
+    // Two paths reach this catch with very different recovery semantics:
     //
-    // If this is the initial bootstrap (state.profile never set), the
-    // login zones are still hidden by the initial-HTML `hidden`
-    // attribute, so the user sees the login modal with this message
-    // and can retry without seeing stale cards behind it.
+    //   - Initial bootstrap (no state.profile yet): UI is in its hidden
+    //     initial state. Without renderLoggedOut() the login modal never
+    //     opens and the page is blank. Common trigger on the deployed
+    //     site: a stale JWT for an auth.users row that was wiped by a
+    //     schema reapply or cleanup sweep.
+    //
+    //   - Tab wake / TOKEN_REFRESHED (state.profile already set): the
+    //     session is still legitimate; a transient RPC error here is not
+    //     a logout signal. Surface the message but preserve the UI.
+    if (!state.profile) {
+      renderLoggedOut();
+    }
     els.loginStatus.textContent = err.message;
   }
 }

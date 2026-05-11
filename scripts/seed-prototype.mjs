@@ -148,6 +148,20 @@ async function main() {
   console.log("Ensuring campus...");
   await ensureCampus();
 
+  // Sweep orphan synthetic-email auth.users from prior runs. Schema reapply
+  // also calls this, but seeding without a fresh reapply (or re-seeding for
+  // testing) still benefits — orphans block re-provisioning of the same
+  // pass-ID with "already registered" errors.
+  console.log("Sweeping orphan auth.users...");
+  const { data: cleaned, error: cleanErr } = await supabase.rpc(
+    "cleanup_orphaned_synthetic_auth_users",
+  );
+  if (cleanErr) {
+    console.warn(`cleanup warning: ${cleanErr.message}`);
+  } else {
+    console.log(`  removed ${cleaned ?? 0} orphan(s).`);
+  }
+
   console.log("Ensuring today's PROTO temp password...");
   const tempPassword = await ensureCampusTemp();
 
