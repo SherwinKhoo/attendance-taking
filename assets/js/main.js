@@ -340,6 +340,13 @@ let forcedPasswordChange = false;
 // would otherwise re-open the dialog before mark_password_set has run.
 let passwordChangeInProgress = false;
 
+// Watchdog budgets for Supabase calls. Declared here (before the top-level
+// bootstrap block) so async functions invoked at module load can read them
+// synchronously without tripping the temporal dead zone.
+const TIMEOUT_RPC_MS = 15000;
+const TIMEOUT_AUTH_MS = 15000;
+const TIMEOUT_INVOKE_MS = 20000;
+
 // -----------------------------------------------------------------------------
 // Bootstrap
 // -----------------------------------------------------------------------------
@@ -424,10 +431,6 @@ function withTimeout(promise, ms, label) {
   });
   return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
 }
-
-const TIMEOUT_RPC_MS = 15000;
-const TIMEOUT_AUTH_MS = 15000;
-const TIMEOUT_INVOKE_MS = 20000;
 
 async function rpc(name, params) {
   if (!state.supabase) {
