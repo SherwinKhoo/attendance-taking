@@ -61,7 +61,9 @@
     } finally {
       const elapsed = performance.now() - start;
       const remaining = Math.max(0, COOLDOWN_MS - elapsed);
-      setTimeout(() => { buttonEl.disabled = false; }, remaining);
+      setTimeout(() => {
+        buttonEl.disabled = false;
+      }, remaining);
     }
   }
 
@@ -92,7 +94,9 @@
     root.className = "zone admin-zone";
     root.innerHTML = `
       <div class="zone-heading"><h2>Admin panel</h2><span class="status">Role: admin${
-        state.profile.admin_campus_scope ? " (" + state.profile.admin_campus_scope + ")" : " (global)"
+        state.profile.admin_campus_scope
+          ? " (" + state.profile.admin_campus_scope + ")"
+          : " (global)"
       }</span></div>
 
       <div class="admin-section">
@@ -143,7 +147,7 @@
 
       <div class="admin-section">
         <h3>Provision (CSV batch)</h3>
-        <p class="status-line">Required columns: <code>pass_id, role, campus, group_name, sub_group</code>. Optional: <code>display_name</code> (only ingested when the toggle below is on).</p>
+        <p class="status-line">Required columns: <code>pass_id, role, campus, group_name, sub_group</code>.\nOptional: <code>display_name</code> (only ingested when the toggle below is on).</p>
         <textarea id="admin-provision-csv" rows="8" placeholder="pass_id,role,campus,group_name,sub_group,display_name
 X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></textarea>
         <label class="toggle">
@@ -219,28 +223,46 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
     bind("admin-unclaimed-refresh", refreshUnclaimed, "admin-unclaimed-list");
     bind("admin-single-submit", handleSingleAdd, "admin-single-result");
     bind("admin-provision-submit", handleProvision, "admin-provision-result");
-    document.getElementById("admin-provision-file").addEventListener("change", handleProvisionFile);
+    document
+      .getElementById("admin-provision-file")
+      .addEventListener("change", handleProvisionFile);
     bind("admin-revoke-submit", handleRevoke, "admin-revoke-result");
     bind("admin-reset-submit", handleReset, "admin-reset-result");
     bind("admin-notif-submit", handleNotify, "admin-notif-status");
-    bind("admin-audit-prev", () => {
-      state.auditOffset = Math.max(0, state.auditOffset - 100);
-      return refreshAudit();
-    }, "admin-audit-list");
-    bind("admin-audit-next", () => {
-      state.auditOffset += 100;
-      return refreshAudit();
-    }, "admin-audit-list");
-    bind("admin-audit-refresh", () => {
-      state.auditOffset = 0;
-      return refreshAudit();
-    }, "admin-audit-list");
+    bind(
+      "admin-audit-prev",
+      () => {
+        state.auditOffset = Math.max(0, state.auditOffset - 100);
+        return refreshAudit();
+      },
+      "admin-audit-list",
+    );
+    bind(
+      "admin-audit-next",
+      () => {
+        state.auditOffset += 100;
+        return refreshAudit();
+      },
+      "admin-audit-list",
+    );
+    bind(
+      "admin-audit-refresh",
+      () => {
+        state.auditOffset = 0;
+        return refreshAudit();
+      },
+      "admin-audit-list",
+    );
   }
 
   function bind(buttonId, handler, errorTargetId) {
     const button = document.getElementById(buttonId);
-    const errorTarget = errorTargetId ? document.getElementById(errorTargetId) : null;
-    button.addEventListener("click", () => withButtonGuard(button, handler, errorTarget));
+    const errorTarget = errorTargetId
+      ? document.getElementById(errorTargetId)
+      : null;
+    button.addEventListener("click", () =>
+      withButtonGuard(button, handler, errorTarget),
+    );
   }
 
   // ---------------------------------------------------------------------------
@@ -248,13 +270,27 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
   // ---------------------------------------------------------------------------
 
   async function handleSingleAdd() {
-    const passId = document.getElementById("admin-single-pass-id").value.trim().toUpperCase();
+    const passId = document
+      .getElementById("admin-single-pass-id")
+      .value.trim()
+      .toUpperCase();
     const role = document.getElementById("admin-single-role").value;
-    const campus = document.getElementById("admin-single-campus").value.trim().toUpperCase();
-    const groupName = document.getElementById("admin-single-group").value.trim();
-    const subGroup = document.getElementById("admin-single-subgroup").value.trim();
-    const displayName = document.getElementById("admin-single-display-name").value.trim();
-    const ingestName = document.getElementById("admin-single-ingest-name").checked;
+    const campus = document
+      .getElementById("admin-single-campus")
+      .value.trim()
+      .toUpperCase();
+    const groupName = document
+      .getElementById("admin-single-group")
+      .value.trim();
+    const subGroup = document
+      .getElementById("admin-single-subgroup")
+      .value.trim();
+    const displayName = document
+      .getElementById("admin-single-display-name")
+      .value.trim();
+    const ingestName = document.getElementById(
+      "admin-single-ingest-name",
+    ).checked;
     const result = document.getElementById("admin-single-result");
     result.hidden = false;
 
@@ -305,15 +341,19 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
   // ---------------------------------------------------------------------------
 
   async function refreshTodaysTemp() {
-    const campus = document.getElementById("admin-temp-campus").value.trim().toUpperCase()
-      || state.profile.admin_campus_scope || "";
+    const campus =
+      document.getElementById("admin-temp-campus").value.trim().toUpperCase() ||
+      state.profile.admin_campus_scope ||
+      "";
     const display = document.getElementById("admin-temp-display");
     if (!campus) {
       display.textContent = "Enter a campus code.";
       return;
     }
     try {
-      const data = await state.rpc("get_current_batch_temp_password", { p_campus: campus });
+      const data = await state.rpc("get_current_batch_temp_password", {
+        p_campus: campus,
+      });
       if (!data?.temp_password) {
         display.textContent = `${campus}: no temp password yet (no provision today).`;
         return;
@@ -366,7 +406,9 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
 
   async function handleProvision() {
     const csv = document.getElementById("admin-provision-csv").value;
-    const ingestNames = document.getElementById("admin-provision-ingest-names").checked;
+    const ingestNames = document.getElementById(
+      "admin-provision-ingest-names",
+    ).checked;
     const result = document.getElementById("admin-provision-result");
     result.hidden = false;
     result.textContent = "Parsing CSV...";
@@ -407,16 +449,44 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
       const ch = text[i];
       if (inQuotes) {
         if (ch === '"' && text[i + 1] === '"') {
-          field += '"'; i += 2; continue;
+          field += '"';
+          i += 2;
+          continue;
         }
-        if (ch === '"') { inQuotes = false; i++; continue; }
-        field += ch; i++; continue;
+        if (ch === '"') {
+          inQuotes = false;
+          i++;
+          continue;
+        }
+        field += ch;
+        i++;
+        continue;
       }
-      if (ch === '"') { inQuotes = true; i++; continue; }
-      if (ch === ",") { row.push(field); field = ""; i++; continue; }
-      if (ch === "\r") { i++; continue; }
-      if (ch === "\n") { row.push(field); out.push(row); row = []; field = ""; i++; continue; }
-      field += ch; i++;
+      if (ch === '"') {
+        inQuotes = true;
+        i++;
+        continue;
+      }
+      if (ch === ",") {
+        row.push(field);
+        field = "";
+        i++;
+        continue;
+      }
+      if (ch === "\r") {
+        i++;
+        continue;
+      }
+      if (ch === "\n") {
+        row.push(field);
+        out.push(row);
+        row = [];
+        field = "";
+        i++;
+        continue;
+      }
+      field += ch;
+      i++;
     }
     if (field !== "" || row.length > 0) {
       row.push(field);
@@ -452,19 +522,35 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
   // ---------------------------------------------------------------------------
 
   async function handleRevoke() {
-    const campus = document.getElementById("admin-revoke-campus").value.trim().toUpperCase();
-    const group_name = document.getElementById("admin-revoke-group").value.trim();
-    const sub_group = document.getElementById("admin-revoke-subgroup").value.trim();
-    const passIdsRaw = document.getElementById("admin-revoke-passids").value.trim();
+    const campus = document
+      .getElementById("admin-revoke-campus")
+      .value.trim()
+      .toUpperCase();
+    const group_name = document
+      .getElementById("admin-revoke-group")
+      .value.trim();
+    const sub_group = document
+      .getElementById("admin-revoke-subgroup")
+      .value.trim();
+    const passIdsRaw = document
+      .getElementById("admin-revoke-passids")
+      .value.trim();
     const pass_ids = passIdsRaw
-      ? passIdsRaw.split(/[\n,]+/).map((s) => s.trim()).filter(Boolean)
+      ? passIdsRaw
+          .split(/[\n,]+/)
+          .map((s) => s.trim())
+          .filter(Boolean)
       : [];
 
     if (!campus && !group_name && !sub_group && pass_ids.length === 0) {
       alert("Provide a filter or a pass-ID list.");
       return;
     }
-    if (!confirm("Revoke matching accounts? This deletes auth users and archives profiles.")) {
+    if (
+      !confirm(
+        "Revoke matching accounts? This deletes auth users and archives profiles.",
+      )
+    ) {
       return;
     }
 
@@ -491,7 +577,10 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
   // ---------------------------------------------------------------------------
 
   async function handleReset() {
-    const passId = document.getElementById("admin-reset-pass-id").value.trim().toUpperCase();
+    const passId = document
+      .getElementById("admin-reset-pass-id")
+      .value.trim()
+      .toUpperCase();
     const result = document.getElementById("admin-reset-result");
     result.hidden = false;
     if (!passId) {
@@ -525,10 +614,17 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
   async function handleNotify() {
     const title = document.getElementById("admin-notif-title").value.trim();
     const body = document.getElementById("admin-notif-body").value.trim();
-    const linkUrl = document.getElementById("admin-notif-link").value.trim() || null;
-    const campus = document.getElementById("admin-notif-campus").value.trim().toUpperCase() || null;
-    const group_name = document.getElementById("admin-notif-group").value.trim() || null;
-    const sub_group = document.getElementById("admin-notif-subgroup").value.trim() || null;
+    const linkUrl =
+      document.getElementById("admin-notif-link").value.trim() || null;
+    const campus =
+      document
+        .getElementById("admin-notif-campus")
+        .value.trim()
+        .toUpperCase() || null;
+    const group_name =
+      document.getElementById("admin-notif-group").value.trim() || null;
+    const sub_group =
+      document.getElementById("admin-notif-subgroup").value.trim() || null;
     const pinned = document.getElementById("admin-notif-pinned").checked;
     const status = document.getElementById("admin-notif-status");
 
@@ -564,7 +660,8 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
   async function refreshAudit() {
     const list = document.getElementById("admin-audit-list");
     list.innerHTML = "";
-    const eventType = document.getElementById("admin-audit-event").value.trim() || null;
+    const eventType =
+      document.getElementById("admin-audit-event").value.trim() || null;
     try {
       const rows = await state.rpc("view_audit_events", {
         p_limit: 100,

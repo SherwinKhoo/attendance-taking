@@ -481,6 +481,12 @@ async function bootstrapAuth() {
       renderLoggedOut();
     } else if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED" || event === "USER_UPDATED") {
       if (passwordChangeInProgress) return;
+      // TOKEN_REFRESHED fires on every silent access-token rotation, which
+      // happens on most tab wake-ups via the wake-recovery handler. The
+      // profile data doesn't change just because the token rotated, so skip
+      // the full onAuthenticated() re-render when a profile is already in
+      // hand. This avoids a spurious logout when a wake-time RPC times out.
+      if (event === "TOKEN_REFRESHED" && state.profile) return;
       await onAuthenticated();
     }
   });
@@ -554,10 +560,17 @@ async function onAuthenticated() {
     // Note: latest session is NOT auto-restored on login/refresh.
     // The user must click "Restore latest" explicitly.
   } catch (err) {
-    // Any error before renderLoggedIn means the UI is half-rendered (the
-    // initial HTML zones are still visible by default). Force the logged-out
-    // shell so the user sees only the login modal, then surface the error.
-    renderLoggedOut();
+    // Transient error (most often a withTimeout reject). Do NOT call
+    // renderLoggedOut here — that path is reserved for the genuine
+    // "profile row no longer exists" case handled above. A 15 s RPC
+    // timeout on tab wake-up is not a logout signal; the existing
+    // session is still valid and the next interaction will likely
+    // succeed.
+    //
+    // If this is the initial bootstrap (state.profile never set), the
+    // login zones are still hidden by the initial-HTML `hidden`
+    // attribute, so the user sees the login modal with this message
+    // and can retry without seeing stale cards behind it.
     els.loginStatus.textContent = err.message;
   }
 }
