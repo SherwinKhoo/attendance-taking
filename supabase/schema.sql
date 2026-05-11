@@ -161,7 +161,11 @@ create index attendance_attempts_device_idx
 create table public.audit_events (
   id uuid primary key default gen_random_uuid(),
   event_type text not null,
-  actor_profile_id uuid references public.profiles(profile_id),
+  -- SET NULL on profile delete so the audit row survives revoke / manual
+  -- profile-delete: the metadata jsonb still carries the relevant ids and
+  -- pass_id strings for forensic lookups. Without this, the FK blocks the
+  -- auth.users → profiles cascade chain on revoke.
+  actor_profile_id uuid references public.profiles(profile_id) on delete set null,
   actor_campus text references public.campuses(code) on update cascade,
   device_install_id uuid,
   session_id uuid,
@@ -1258,7 +1262,12 @@ begin
     delete from auth.users u
     where u.email like '%@passid.local'
       and not exists (
-        select 1 from public.profiles p where p.profile_id = u.id
+        -- Treat archived profiles as "doesn't count": if the only profile
+        -- match is archived, the auth user is still an orphan from the
+        -- re-provisioning standpoint and should be cleaned up.
+        select 1 from public.profiles p
+        where p.profile_id = u.id
+          and p.archived_at is null
       )
     returning 1
   )

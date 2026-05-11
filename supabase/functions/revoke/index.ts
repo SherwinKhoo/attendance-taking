@@ -171,30 +171,29 @@ Deno.serve(async (req: Request) => {
   const errors: { pass_id: string; message: string }[] = [];
 
   for (const t of targets) {
-    // Delete auth.users row.
+    // Delete the auth.users row. profiles.profile_id REFERENCES
+    // auth.users(id) ON DELETE CASCADE, so this also removes the matching
+    // profile row (and, via the SET NULL FK we added on
+    // audit_events.actor_profile_id, leaves audit history intact with a
+    // null actor). The metadata jsonb below still records pass_id +
+    // profile_id strings for forensic lookups.
+    //
+    // CAVEAT: if the revoked user has rows in attendance_sessions,
+    // attendance_attempts, or notifications.created_by, those FKs are
+    // still NO ACTION and will block the cascade. The error path below
+    // surfaces that explicitly so an operator knows to address those FKs
+    // (same SET NULL / nullable-column pattern) before re-trying.
     const { error: delErr } = await service.auth.admin.deleteUser(t.profile_id);
     if (delErr) {
-      // Continue: archive the profile anyway so it can't authenticate, but
-      // record the error so the operator can clean up the orphan.
       errors.push({
         pass_id: t.pass_id,
         message: `auth.admin.deleteUser failed: ${delErr.message}`,
       });
-    }
-
-    const { error: updErr } = await service
-      .from("profiles")
-      .update({ archived_at: new Date().toISOString(), pass_id: null })
-      .eq("profile_id", t.profile_id);
-    if (updErr) {
-      errors.push({
-        pass_id: t.pass_id,
-        message: `profile archive failed: ${updErr.message}`,
-      });
       continue;
     }
 
-    // Audit log (writes via RPC since audit_events is deny-all).
+    // Audit log. actor_profile_id here is the *admin who revoked* (still
+    // alive); the revoked user's identity lives in the metadata.
     await service.from("audit_events").insert({
       event_type: "revoke_profile",
       actor_profile_id: caller.profile_id,
