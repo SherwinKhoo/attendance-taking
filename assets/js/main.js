@@ -788,6 +788,14 @@ async function handleAuthSubmit(event) {
     return;
   }
   els.loginStatus.textContent = "Signing in...";
+  // Set BEFORE awaiting signInWithPassword: Supabase fires its SIGNED_IN
+  // callback synchronously from inside signInWithPassword, so the
+  // onAuthenticated handler runs before the await ever resolves. Setting
+  // the flag after would mean onAuthenticated sees justSignedIn=false and
+  // (for unclaimed profiles) bounces the user straight back to the login
+  // modal. Cleared on failure paths below so a wrong-password attempt
+  // doesn't leak the flag into a later cached-session resume.
+  justSignedIn = true;
   let error;
   try {
     ({ error } = await withTimeout(
@@ -799,18 +807,15 @@ async function handleAuthSubmit(event) {
       "signInWithPassword",
     ));
   } catch (err) {
+    justSignedIn = false;
     els.loginStatus.textContent = err.message;
     return;
   }
   if (error) {
+    justSignedIn = false;
     els.loginStatus.textContent = "Pass ID or password is incorrect.";
     return;
   }
-  // Mark this as a fresh sign-in so onAuthenticated allows the forced
-  // change-password modal to open for an unclaimed profile. Without this
-  // flag, the same code path treats the resulting onAuthStateChange as a
-  // cached-session resume and signs the user back out.
-  justSignedIn = true;
   // onAuthStateChange will fire and run onAuthenticated().
 }
 
