@@ -339,6 +339,11 @@ let forcedPasswordChange = false;
 // running — re-auth + updateUser fire SIGNED_IN/USER_UPDATED events that
 // would otherwise re-open the dialog before mark_password_set has run.
 let passwordChangeInProgress = false;
+// Set true by handleAuthSubmit immediately after a successful signInWithPassword.
+// Read once by onAuthenticated to distinguish a fresh sign-in (allowed to open
+// the forced-change modal) from a cached-session resume (must sign out so the
+// next person at the device doesn't inherit a mid-claim session).
+let justSignedIn = false;
 
 // Watchdog budgets for Supabase calls. Declared here (before the top-level
 // bootstrap block) so async functions invoked at module load can read them
@@ -538,6 +543,16 @@ async function onAuthenticated() {
       return;
     }
     if (profile.needs_password_change) {
+      if (!justSignedIn) {
+        // Cached-session resume of an unclaimed account. Auto-resuming
+        // would let the next person at this device step straight into the
+        // previous user's mid-claim flow. Sign out and require an explicit
+        // login.
+        els.loginStatus.textContent = "Sign in to continue.";
+        await handleLogout();
+        return;
+      }
+      justSignedIn = false;
       forcedPasswordChange = true;
       openPasswordDialog({
         title: "Set a new password",
@@ -546,6 +561,7 @@ async function onAuthenticated() {
       });
       return;
     }
+    justSignedIn = false;
     forcedPasswordChange = false;
     renderLoggedIn(profile);
     subscribeNotifications(profile);
@@ -580,6 +596,7 @@ function renderLoggedOut() {
   state.latestSession = null;
   pendingSessionPayload = null;
   forcedPasswordChange = false;
+  justSignedIn = false;
   if (state.notificationsChannel) {
     state.supabase.removeChannel(state.notificationsChannel);
     state.notificationsChannel = null;
@@ -786,6 +803,11 @@ async function handleAuthSubmit(event) {
     els.loginStatus.textContent = "Pass ID or password is incorrect.";
     return;
   }
+  // Mark this as a fresh sign-in so onAuthenticated allows the forced
+  // change-password modal to open for an unclaimed profile. Without this
+  // flag, the same code path treats the resulting onAuthStateChange as a
+  // cached-session resume and signs the user back out.
+  justSignedIn = true;
   // onAuthStateChange will fire and run onAuthenticated().
 }
 
