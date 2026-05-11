@@ -104,6 +104,17 @@ app.innerHTML = `
     <p class="status-line" id="attendance-status">Scan the session QR code to submit attendance.</p>
   </section>
 
+  <section class="zone" id="geofence-zone" aria-labelledby="geofence-title">
+    <div class="zone-heading">
+      <div><h2 id="geofence-title">Check in (campus grounds)</h2></div>
+      <button id="refresh-open-sessions" type="button">Refresh</button>
+    </div>
+    <ul id="open-sessions-list" class="open-sessions-list">
+      <li class="open-sessions-empty">Tap Refresh to load open sessions for your group.</li>
+    </ul>
+    <p class="status-line" id="geofence-status"></p>
+  </section>
+
   <section class="zone" id="session-zone" aria-labelledby="session-title">
     <div class="zone-heading">
       <div><h2 id="session-title">Generate Session</h2></div>
@@ -134,6 +145,11 @@ app.innerHTML = `
           <option value="QRCode">QR Code</option>
         </select>
       </label>
+      <fieldset class="checkin-modes">
+        <legend>Check-in modes</legend>
+        <label><input id="mode-qr" type="checkbox" checked /> QR scan</label>
+        <label><input id="mode-geofence" type="checkbox" /> Campus grounds (no QR)</label>
+      </fieldset>
       <button id="generate-session" type="submit">Generate QR Code</button>
     </form>
     <div class="qr-layout">
@@ -258,6 +274,12 @@ const els = {
   attendanceScan: document.getElementById("attendance-scan"),
   attendanceStatus: document.getElementById("attendance-status"),
   attendanceZone: document.getElementById("attendance-zone"),
+  geofenceZone: document.getElementById("geofence-zone"),
+  refreshOpenSessions: document.getElementById("refresh-open-sessions"),
+  openSessionsList: document.getElementById("open-sessions-list"),
+  geofenceStatus: document.getElementById("geofence-status"),
+  modeQr: document.getElementById("mode-qr"),
+  modeGeofence: document.getElementById("mode-geofence"),
   sessionZone: document.getElementById("session-zone"),
   sessionForm: document.getElementById("session-form"),
   sessionName: document.getElementById("session-name"),
@@ -456,7 +478,9 @@ function renderLoggedOut() {
   els.sessionStatus.textContent = "";
   els.sessionSummary.textContent = "No session generated yet. Use the form above or click \"Restore latest\".";
   els.attendanceZone.hidden = true;
+  els.geofenceZone.hidden = true;
   els.sessionZone.hidden = true;
+  resetOpenSessionsList();
   if (window.AttendanceAdmin?.unmount) window.AttendanceAdmin.unmount();
   clearBarcodeDisplay();
   closeIfOpen(els.passwordDialog);
@@ -470,6 +494,7 @@ function renderLoggedIn(profile) {
   els.passId.value = profile.pass_id ?? "";
   els.password.value = "";
   els.attendanceZone.hidden = false;
+  els.geofenceZone.hidden = false;
   // Hide the Generate-Session card entirely for the plain `user` role.
   // Server-side `create_attendance_session` still rejects unauthorised
   // creators as a backstop.
@@ -479,6 +504,37 @@ function renderLoggedIn(profile) {
 
 function closeIfOpen(dialogEl) {
   if (dialogEl?.open) dialogEl.close();
+}
+
+// Disable a button while an async handler runs and for at least 3 s after
+// the click — whichever takes longer. Spam-protection for DB-touching
+// buttons (Restore latest, Refresh attendee total, Export CSV, etc.). Apply
+// at attach time via `bindCooldown(button, fn)`.
+const BUTTON_COOLDOWN_MS = 3000;
+async function withCooldown(button, fn) {
+  if (!button || button.disabled) return;
+  button.disabled = true;
+  const start = performance.now();
+  try {
+    await fn();
+  } finally {
+    const elapsed = performance.now() - start;
+    const remaining = Math.max(0, BUTTON_COOLDOWN_MS - elapsed);
+    setTimeout(() => { button.disabled = false; }, remaining);
+  }
+}
+function bindCooldown(button, fn) {
+  button.addEventListener("click", () => withCooldown(button, fn));
+}
+
+function resetOpenSessionsList() {
+  if (!els.openSessionsList) return;
+  els.openSessionsList.innerHTML = "";
+  const li = document.createElement("li");
+  li.className = "open-sessions-empty";
+  li.textContent = "Tap Refresh to load open sessions for your group.";
+  els.openSessionsList.append(li);
+  if (els.geofenceStatus) els.geofenceStatus.textContent = "";
 }
 
 // -----------------------------------------------------------------------------
@@ -491,10 +547,11 @@ function attachEventListeners() {
   );
   els.attendanceScan.addEventListener("click", handleAttendanceScan);
   els.sessionForm.addEventListener("submit", handleSessionCreate);
-  els.restoreSession.addEventListener("click", restoreLatestSession);
+  bindCooldown(els.restoreSession, restoreLatestSession);
   els.fullscreenQr.addEventListener("click", openFullscreenQr);
-  els.refreshAttendeeTotal.addEventListener("click", refreshAttendeeTotal);
-  els.exportCsv.addEventListener("click", handleCsvExport);
+  bindCooldown(els.refreshAttendeeTotal, refreshAttendeeTotal);
+  bindCooldown(els.exportCsv, handleCsvExport);
+  bindCooldown(els.refreshOpenSessions, refreshOpenSessions);
   els.loginForm.addEventListener("submit", handleAuthSubmit);
   els.passwordVisibilityToggle.addEventListener("click", () =>
     toggleFieldVisibility(els.password, els.passwordVisibilityToggle),
@@ -735,9 +792,12 @@ async function subscribeNotifications(profile) {
     state.notificationsChannel = null;
   }
   await refreshNotifications();
-  // Realtime subscription. RLS handles scope filtering server-side.
+  // Single channel covers both live notifications and force-logout on revoke.
+  // RLS handles scope filtering for notifications; the profile filter scopes
+  // the revoke event to this user only. Default REPLICA IDENTITY is sufficient
+  // because we only need new_record.archived_at to know the user was archived.
   state.notificationsChannel = state.supabase
-    .channel(`notifications-${profile.profile_id}`)
+    .channel(`user-events-${profile.profile_id}`)
     .on(
       "postgres_changes",
       { event: "INSERT", schema: "public", table: "notifications" },
@@ -748,7 +808,29 @@ async function subscribeNotifications(profile) {
       { event: "UPDATE", schema: "public", table: "notifications" },
       () => refreshNotifications(),
     )
+    .on(
+      "postgres_changes",
+      {
+        event: "UPDATE",
+        schema: "public",
+        table: "profiles",
+        filter: `profile_id=eq.${profile.profile_id}`,
+      },
+      (payload) => handleProfileUpdate(payload),
+    )
     .subscribe();
+}
+
+async function handleProfileUpdate(payload) {
+  const archivedAt = payload?.new?.archived_at;
+  if (!archivedAt) return;
+  // Account was revoked. Surface a brief notice, then force-logout. The
+  // server has already deleted auth.users for this profile in the revoke
+  // Edge Function, so any subsequent API call would 401 anyway; this just
+  // makes the UI react immediately instead of waiting for the next request.
+  showToast("This account has been revoked. Signing you out.");
+  await handleLogout();
+  els.loginStatus.textContent = "This account has been revoked. Please contact your administrator.";
 }
 
 async function refreshNotifications() {
@@ -889,12 +971,19 @@ async function handleSessionCreate(event) {
     return;
   }
 
+  const allowQr = els.modeQr.checked;
+  const allowGeofence = els.modeGeofence.checked;
+  if (!allowQr && !allowGeofence) {
+    els.sessionStatus.textContent = "Select at least one check-in mode.";
+    return;
+  }
+
   const submitBtn = event.submitter ?? document.getElementById("generate-session");
   submitBtn.disabled = true;
   try {
     els.sessionStatus.textContent = "Getting creator location...";
     const position = await getDeviceLocation();
-    els.sessionStatus.textContent = "Generating QR code...";
+    els.sessionStatus.textContent = allowQr ? "Generating QR code..." : "Creating session...";
     const payload = await rpc("create_attendance_session", {
       p_code: crypto.randomUUID(),
       p_name: els.sessionName.value.trim(),
@@ -903,21 +992,105 @@ async function handleSessionCreate(event) {
       p_creator_lat: roundCoordinate(position.coords.latitude),
       p_creator_lon: roundCoordinate(position.coords.longitude),
       p_device_install_id: state.deviceInstallId,
+      p_allow_qr: allowQr,
+      p_allow_geofence: allowGeofence,
     });
 
     state.latestSession = payload;
     localStorage.setItem(STORAGE_KEYS.latestCreatorSession, JSON.stringify(payload));
-    await renderSessionQr(payload);
+    if (allowQr) {
+      await renderSessionQr(payload);
+      els.fullscreenQr.disabled = false;
+    } else {
+      clearBarcodeDisplay();
+      els.fullscreenQr.disabled = true;
+    }
     renderSessionSummary(payload);
-    els.fullscreenQr.disabled = false;
     els.exportCsv.disabled = false;
     els.refreshAttendeeTotal.disabled = false;
-    els.sessionStatus.textContent = "Session QR generated.";
+    els.sessionStatus.textContent = allowQr
+      ? "Session QR generated."
+      : "Campus-grounds session opened. Attendees can find it under Check in.";
     await refreshAttendeeTotal();
   } catch (error) {
     els.sessionStatus.textContent = error.message || "Could not create session.";
   } finally {
     submitBtn.disabled = false;
+  }
+}
+
+// -----------------------------------------------------------------------------
+// Campus-grounds (geofence) check-in
+// -----------------------------------------------------------------------------
+
+async function refreshOpenSessions() {
+  if (!requireLogin(els.geofenceStatus)) return;
+  els.geofenceStatus.textContent = "Loading open sessions...";
+  let rows;
+  try {
+    rows = await rpc("list_open_geofence_sessions");
+  } catch (err) {
+    els.geofenceStatus.textContent = err.message || "Could not load open sessions.";
+    return;
+  }
+  els.openSessionsList.innerHTML = "";
+  if (!rows || rows.length === 0) {
+    const li = document.createElement("li");
+    li.className = "open-sessions-empty";
+    li.textContent = "No open campus-grounds sessions for your group.";
+    els.openSessionsList.append(li);
+    els.geofenceStatus.textContent = "";
+    return;
+  }
+  for (const row of rows) {
+    const li = document.createElement("li");
+    li.className = "open-session-item";
+    const meta = document.createElement("div");
+    meta.className = "open-session-meta";
+    const title = document.createElement("strong");
+    title.textContent = row.session_name;
+    const sub = document.createElement("span");
+    const startedAt = row.intended_start_at
+      ? new Date(row.intended_start_at).toLocaleString()
+      : "";
+    sub.textContent = `${row.creator_pass_id ?? ""} · ${startedAt}`.trim();
+    meta.append(title, sub);
+    const btn = document.createElement("button");
+    btn.type = "button";
+    btn.textContent = "Check in";
+    btn.dataset.sessionId = row.session_id;
+    bindCooldown(btn, () => handleGeofenceCheckIn(row, btn));
+    li.append(meta, btn);
+    els.openSessionsList.append(li);
+  }
+  els.geofenceStatus.textContent = `${rows.length} open session${rows.length === 1 ? "" : "s"}.`;
+}
+
+async function handleGeofenceCheckIn(row, btn) {
+  if (!requireLogin(els.geofenceStatus)) return;
+  els.geofenceStatus.textContent = "Getting your location...";
+  let position;
+  try {
+    position = await getDeviceLocation();
+  } catch (err) {
+    els.geofenceStatus.textContent = err.message || "Could not get location.";
+    return;
+  }
+  els.geofenceStatus.textContent = "Submitting...";
+  try {
+    const result = await rpc("submit_geofence_attendance", {
+      p_session_id: row.session_id,
+      p_device_install_id: state.deviceInstallId,
+      p_submitter_lat: roundCoordinate(position.coords.latitude),
+      p_submitter_lon: roundCoordinate(position.coords.longitude),
+    });
+    const flagsNote = Array.isArray(result?.flags) && result.flags.length > 0
+      ? ` (flags: ${result.flags.join(", ")})`
+      : "";
+    els.geofenceStatus.textContent = `Checked in to "${row.session_name}".${flagsNote}`;
+    if (btn) btn.textContent = "Checked in";
+  } catch (err) {
+    els.geofenceStatus.textContent = err.message || "Check-in failed.";
   }
 }
 

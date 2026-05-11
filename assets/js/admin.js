@@ -29,10 +29,14 @@
   // Disable a button while an async handler runs and surface its error to the
   // given target. Eliminates the silent-failure path where an uncaught
   // rejection left the button visually responsive but functionally inert.
+  // Also enforces a 3-second minimum disable window after the click to
+  // throttle DB-touching admin buttons against spam.
+  const COOLDOWN_MS = 3000;
   async function withButtonGuard(buttonEl, asyncFn, errorTargetEl) {
     if (!buttonEl) return asyncFn();
-    if (buttonEl.disabled) return; // already in flight
+    if (buttonEl.disabled) return; // already in flight or cooling down
     buttonEl.disabled = true;
+    const start = performance.now();
     try {
       await asyncFn();
     } catch (err) {
@@ -45,7 +49,9 @@
         console.error("[admin]", message);
       }
     } finally {
-      buttonEl.disabled = false;
+      const elapsed = performance.now() - start;
+      const remaining = Math.max(0, COOLDOWN_MS - elapsed);
+      setTimeout(() => { buttonEl.disabled = false; }, remaining);
     }
   }
 

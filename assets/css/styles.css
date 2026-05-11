@@ -640,6 +640,32 @@ dialog .modal-panel menu { display: flex; gap: 0.5rem; justify-content: flex-end
 .admin-row input { flex: 1 1 180px; }
 .admin-list { list-style: none; padding: 0; margin: 0; max-height: 240px; overflow-y: auto; font-size: 0.92rem; }
 .admin-list li { padding: 0.3rem 0; border-bottom: 1px solid var(--line); }
+
+.checkin-modes {
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 0.4rem 0.6rem 0.5rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.2rem;
+  font-size: 0.92rem;
+}
+.checkin-modes legend { padding: 0 0.3rem; font-size: 0.85rem; color: var(--muted); }
+.checkin-modes label { display: flex; gap: 0.4rem; align-items: center; }
+
+.open-sessions-list { list-style: none; padding: 0; margin: 0.5rem 0 0; }
+.open-sessions-list .open-sessions-empty { color: var(--muted); padding: 0.5rem 0; }
+.open-session-item {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 0.75rem;
+  padding: 0.5rem 0;
+  border-bottom: 1px solid var(--line);
+}
+.open-session-meta { display: flex; flex-direction: column; min-width: 0; }
+.open-session-meta strong { font-size: 0.95rem; }
+.open-session-meta span { color: var(--muted); font-size: 0.85rem; }
 .admin-output {
   background: rgba(127, 127, 127, 0.08);
   padding: 0.75rem;

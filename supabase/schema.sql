@@ -33,8 +33,11 @@ drop function if exists public.login_with_password(text, text, uuid);
 drop function if exists public.logout_session(text, uuid, uuid);
 drop function if exists public.get_current_login_profile(text, uuid, uuid);
 drop function if exists public.create_attendance_session(text, text, timestamptz, integer, double precision, double precision, text, uuid, uuid);
+drop function if exists public.create_attendance_session(text, text, timestamptz, integer, double precision, double precision, uuid);
 drop function if exists public.get_latest_active_session_qr_for_creator(text, uuid, uuid);
 drop function if exists public.submit_attendance(jsonb, text, uuid, uuid, double precision, double precision);
+drop function if exists public.list_open_geofence_sessions();
+drop function if exists public.submit_geofence_attendance(uuid, uuid, double precision, double precision);
 drop function if exists public.view_session_attendance(uuid, text, uuid, uuid);
 drop function if exists public.export_canonical_attendance_csv(uuid, text, uuid, uuid);
 
@@ -55,6 +58,12 @@ create table public.campuses (
   code text primary key,
   name text not null,
   timezone text not null,
+  -- Optional per-campus geofence used by the campus-grounds (no-QR) check-in
+  -- mode. All three columns must be set for the mode to be available; sessions
+  -- attempting to enable allow_geofence on a campus without these are rejected.
+  center_lat double precision,
+  center_lon double precision,
+  radius_metres integer check (radius_metres is null or radius_metres > 0),
   created_at timestamptz not null default now()
 );
 
@@ -110,7 +119,13 @@ create table public.attendance_sessions (
   creator_profile_id uuid not null references public.profiles(profile_id),
   creator_device_install_id uuid not null,
   active boolean not null default true,
-  created_at timestamptz not null default now()
+  -- Check-in modes. At least one must be enabled (CHECK below). QR is the
+  -- default; campus-grounds is opt-in by the creator and requires the
+  -- creator's campus to have a configured geofence.
+  allow_qr boolean not null default true,
+  allow_geofence boolean not null default false,
+  created_at timestamptz not null default now(),
+  constraint attendance_sessions_at_least_one_mode check (allow_qr or allow_geofence)
 );
 
 create unique index attendance_sessions_code_unique_idx
@@ -392,7 +407,9 @@ create or replace function public.create_attendance_session(
   p_grace_period_minutes integer,
   p_creator_lat double precision,
   p_creator_lon double precision,
-  p_device_install_id uuid
+  p_device_install_id uuid,
+  p_allow_qr boolean default true,
+  p_allow_geofence boolean default false
 )
 returns jsonb
 language plpgsql security definer
@@ -401,6 +418,7 @@ as $$
 declare
   v_caller public.profiles;
   v_session public.attendance_sessions;
+  v_campus public.campuses;
 begin
   v_caller := public.assert_authenticated();
 
@@ -416,13 +434,29 @@ begin
     raise exception 'Session name must be 1-120 characters.';
   end if;
 
+  if not (p_allow_qr or p_allow_geofence) then
+    raise exception 'At least one check-in mode (QR scan or campus grounds) must be enabled.';
+  end if;
+
+  if p_allow_geofence then
+    select * into v_campus from public.campuses where code = v_caller.campus;
+    if v_campus.center_lat is null
+       or v_campus.center_lon is null
+       or v_campus.radius_metres is null then
+      raise exception 'Campus % has no geofence configured; campus-grounds mode unavailable.',
+        v_caller.campus;
+    end if;
+  end if;
+
   insert into public.attendance_sessions(
     code, name, intended_start_at, grace_period_minutes,
-    creator_lat, creator_lon, creator_profile_id, creator_device_install_id
+    creator_lat, creator_lon, creator_profile_id, creator_device_install_id,
+    allow_qr, allow_geofence
   )
   values (
     upper(trim(p_code)), trim(p_name), p_intended_start_at, p_grace_period_minutes,
-    p_creator_lat, p_creator_lon, v_caller.profile_id, p_device_install_id
+    p_creator_lat, p_creator_lon, v_caller.profile_id, p_device_install_id,
+    p_allow_qr, p_allow_geofence
   )
   returning * into v_session;
 
@@ -439,6 +473,8 @@ begin
     'creator_lat', v_session.creator_lat,
     'creator_lon', v_session.creator_lon,
     'creator_profile_id', v_session.creator_profile_id,
+    'allow_qr', v_session.allow_qr,
+    'allow_geofence', v_session.allow_geofence,
     'created_at', v_session.created_at
   );
 end;
@@ -576,6 +612,164 @@ begin
   values (
     'submit_attendance', v_caller.profile_id, v_caller.campus, p_device_install_id,
     v_session.id, v_attempt.id, jsonb_build_object('flags', v_flags)
+  );
+
+  return to_jsonb(v_attempt);
+end;
+$$;
+
+-- List active campus-grounds sessions for the caller's exact
+-- campus + group + sub-group bundle. Used by the "Check in" zone refresh.
+create or replace function public.list_open_geofence_sessions()
+returns jsonb
+language plpgsql security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_caller public.profiles;
+begin
+  v_caller := public.assert_authenticated();
+
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+      'session_id', s.id,
+      'session_code', s.code,
+      'session_name', s.name,
+      'intended_start_at', s.intended_start_at,
+      'grace_period_minutes', s.grace_period_minutes,
+      'creator_pass_id', cp.pass_id,
+      'created_at', s.created_at
+    ) order by s.created_at desc)
+    from public.attendance_sessions s
+    join public.profiles cp on cp.profile_id = s.creator_profile_id
+    where s.active
+      and s.allow_geofence
+      and cp.archived_at is null
+      and cp.campus = v_caller.campus
+      and cp.group_name = v_caller.group_name
+      and cp.sub_group = v_caller.sub_group
+  ), '[]'::jsonb);
+end;
+$$;
+
+-- Submit attendance via the campus-grounds path. Hard-rejects when the
+-- submitter is outside the campus geofence (unlike submit_attendance which
+-- soft-flags OUTSIDE_LOCATION_MARGIN for QR's 50 m proximity check).
+create or replace function public.submit_geofence_attendance(
+  p_session_id uuid,
+  p_device_install_id uuid,
+  p_submitter_lat double precision,
+  p_submitter_lon double precision
+)
+returns jsonb
+language plpgsql security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_caller public.profiles;
+  v_session public.attendance_sessions;
+  v_creator public.profiles;
+  v_campus public.campuses;
+  v_distance double precision;
+  v_flags text[] := '{}';
+  v_canonical boolean := false;
+  v_attempt public.attendance_attempts;
+  v_payload jsonb;
+begin
+  v_caller := public.assert_authenticated();
+
+  if p_session_id is null then
+    raise exception 'Session id is required.';
+  end if;
+
+  select * into v_session from public.attendance_sessions where id = p_session_id;
+  if v_session.id is null then
+    raise exception 'Session was not found.';
+  end if;
+  if not v_session.active then
+    raise exception 'Session is no longer active.';
+  end if;
+  if not v_session.allow_geofence then
+    raise exception 'This session does not allow campus-grounds check-in.';
+  end if;
+
+  select * into v_creator
+  from public.profiles
+  where profile_id = v_session.creator_profile_id;
+  if v_creator.profile_id is null
+     or v_creator.archived_at is not null
+     or v_creator.campus is distinct from v_caller.campus
+     or v_creator.group_name is distinct from v_caller.group_name
+     or v_creator.sub_group is distinct from v_caller.sub_group then
+    raise exception 'You are not in the target group for this session.';
+  end if;
+
+  select * into v_campus from public.campuses where code = v_caller.campus;
+  if v_campus.center_lat is null
+     or v_campus.center_lon is null
+     or v_campus.radius_metres is null then
+    raise exception 'Campus % has no geofence configured.', v_caller.campus;
+  end if;
+
+  v_distance := public.distance_metres(
+    v_campus.center_lat, v_campus.center_lon,
+    p_submitter_lat, p_submitter_lon
+  );
+
+  if v_distance > v_campus.radius_metres then
+    raise exception 'You are outside the campus grounds (% m from centre, limit % m).',
+      round(v_distance)::int, v_campus.radius_metres;
+  end if;
+
+  if v_session.grace_period_minutes > 0
+     and now() > v_session.intended_start_at + make_interval(mins => v_session.grace_period_minutes) then
+    v_flags := array_append(v_flags, 'LATE_AFTER_GRACE_PERIOD');
+  end if;
+
+  if exists (
+    select 1 from public.attendance_attempts
+    where device_install_id = p_device_install_id
+      and profile_id <> v_caller.profile_id
+  ) then
+    v_flags := array_append(v_flags, 'DEVICE_USED_FOR_MULTIPLE_PROFILES');
+  end if;
+
+  if exists (
+    select 1 from public.attendance_attempts
+    where session_id = v_session.id
+      and profile_id = v_caller.profile_id
+  ) then
+    v_flags := array_append(v_flags, 'DUPLICATE_ATTEMPT');
+  else
+    v_canonical := true;
+  end if;
+
+  v_payload := jsonb_build_object(
+    'mode', 'geofence',
+    'session_id', v_session.id,
+    'session_code', v_session.code
+  );
+
+  insert into public.attendance_attempts(
+    session_id, session_code, session_name, scanned_session_payload,
+    profile_id, device_install_id, submitter_lat, submitter_lon,
+    status, flags, canonical, distance_from_session_m
+  )
+  values (
+    v_session.id, v_session.code, v_session.name, v_payload,
+    v_caller.profile_id, p_device_install_id, p_submitter_lat, p_submitter_lon,
+    case when cardinality(v_flags) > 0 then 'flagged' else 'accepted' end,
+    v_flags, v_canonical, v_distance
+  )
+  returning * into v_attempt;
+
+  insert into public.audit_events(
+    event_type, actor_profile_id, actor_campus, device_install_id,
+    session_id, attendance_attempt_id, metadata
+  )
+  values (
+    'submit_geofence_attendance', v_caller.profile_id, v_caller.campus, p_device_install_id,
+    v_session.id, v_attempt.id, jsonb_build_object('flags', v_flags, 'distance_m', v_distance)
   );
 
   return to_jsonb(v_attempt);
@@ -1106,7 +1300,9 @@ revoke all on function public.campuses_due_for_rotation() from public, anon, aut
 revoke all on function public.get_current_login_profile(uuid) from public, anon, authenticated;
 revoke all on function public.mark_password_set() from public, anon, authenticated;
 revoke all on function public.validate_password(text) from public, anon, authenticated;
-revoke all on function public.create_attendance_session(text, text, timestamptz, integer, double precision, double precision, uuid) from public, anon, authenticated;
+revoke all on function public.create_attendance_session(text, text, timestamptz, integer, double precision, double precision, uuid, boolean, boolean) from public, anon, authenticated;
+revoke all on function public.list_open_geofence_sessions() from public, anon, authenticated;
+revoke all on function public.submit_geofence_attendance(uuid, uuid, double precision, double precision) from public, anon, authenticated;
 revoke all on function public.get_latest_active_session_qr_for_creator(uuid) from public, anon, authenticated;
 revoke all on function public.submit_attendance(jsonb, uuid, double precision, double precision) from public, anon, authenticated;
 revoke all on function public.view_session_attendance(uuid) from public, anon, authenticated;
@@ -1120,7 +1316,9 @@ revoke all on function public.view_audit_events(integer, integer, text) from pub
 grant execute on function public.get_current_login_profile(uuid) to authenticated;
 grant execute on function public.mark_password_set() to authenticated;
 grant execute on function public.validate_password(text) to authenticated;
-grant execute on function public.create_attendance_session(text, text, timestamptz, integer, double precision, double precision, uuid) to authenticated;
+grant execute on function public.create_attendance_session(text, text, timestamptz, integer, double precision, double precision, uuid, boolean, boolean) to authenticated;
+grant execute on function public.list_open_geofence_sessions() to authenticated;
+grant execute on function public.submit_geofence_attendance(uuid, uuid, double precision, double precision) to authenticated;
 grant execute on function public.get_latest_active_session_qr_for_creator(uuid) to authenticated;
 grant execute on function public.submit_attendance(jsonb, uuid, double precision, double precision) to authenticated;
 grant execute on function public.view_session_attendance(uuid) to authenticated;
@@ -1136,6 +1334,38 @@ grant execute on function public.ensure_today_temp(text, text) to service_role;
 grant execute on function public.rotate_today_temp(text, text) to service_role;
 grant execute on function public.campuses_due_for_rotation() to service_role;
 grant execute on function public.get_current_login_profile(uuid) to service_role;
+
+-- -----------------------------------------------------------------------------
+-- Realtime publications
+-- -----------------------------------------------------------------------------
+-- Enable postgres_changes streaming for the tables the client subscribes to:
+--   - notifications: live admin-posted alerts in the settings menu.
+--   - profiles:      force-logout when archived_at is set (revoke flow).
+-- Idempotent so reapplies don't fail if the publication already includes them.
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'notifications'
+  ) then
+    alter publication supabase_realtime add table public.notifications;
+  end if;
+end $$;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime'
+      and schemaname = 'public'
+      and tablename = 'profiles'
+  ) then
+    alter publication supabase_realtime add table public.profiles;
+  end if;
+end $$;
 
 -- -----------------------------------------------------------------------------
 -- pg_cron schedule (commented; enable after rotate-daily Edge Function deploys)
