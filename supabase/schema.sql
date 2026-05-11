@@ -40,6 +40,8 @@ drop function if exists public.list_open_geofence_sessions();
 drop function if exists public.submit_geofence_attendance(uuid, uuid, double precision, double precision);
 drop function if exists public.view_session_attendance(uuid, text, uuid, uuid);
 drop function if exists public.export_canonical_attendance_csv(uuid, text, uuid, uuid);
+drop function if exists public.cleanup_orphaned_synthetic_auth_users();
+drop function if exists public.revoke_user_refresh_tokens(uuid);
 
 drop table if exists public.notifications cascade;
 drop table if exists public.system_secrets cascade;
@@ -1218,6 +1220,53 @@ begin
 end;
 $$;
 
+-- Revoke every refresh token for a user. Used by the reset-password Edge
+-- Function as an explicit force-logout that doesn't depend on GoTrue's
+-- side effects from a password change. Returns the deleted row count.
+create or replace function public.revoke_user_refresh_tokens(p_user_id uuid)
+returns integer
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_deleted integer;
+begin
+  with d as (
+    delete from auth.refresh_tokens where user_id = p_user_id::text returning 1
+  )
+  select count(*) into v_deleted from d;
+  return v_deleted;
+end;
+$$;
+
+-- Cleanup helper. Deletes auth.users rows with a synthetic attendance email
+-- (...@passid.local) that no longer have a matching public.profiles row.
+-- Called from the revoke Edge Function on every batch so future provisioning
+-- of the same pass-ID never gets blocked by an orphan, and also re-runnable
+-- manually as `select public.cleanup_orphaned_synthetic_auth_users();`.
+create or replace function public.cleanup_orphaned_synthetic_auth_users()
+returns integer
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_deleted integer;
+begin
+  with d as (
+    delete from auth.users u
+    where u.email like '%@passid.local'
+      and not exists (
+        select 1 from public.profiles p where p.profile_id = u.id
+      )
+    returning 1
+  )
+  select count(*) into v_deleted from d;
+  return v_deleted;
+end;
+$$;
+
 -- -----------------------------------------------------------------------------
 -- RLS policies
 -- -----------------------------------------------------------------------------
@@ -1329,11 +1378,18 @@ grant execute on function public.post_notification(text, text, text, text, text,
 grant execute on function public.pin_notification(uuid) to authenticated;
 grant execute on function public.view_audit_events(integer, integer, text) to authenticated;
 
--- Edge Function helpers called via service_role (provision, rotate-daily).
+-- Edge Function helpers called via service_role (provision, rotate-daily,
+-- revoke, reset-password).
 grant execute on function public.ensure_today_temp(text, text) to service_role;
 grant execute on function public.rotate_today_temp(text, text) to service_role;
 grant execute on function public.campuses_due_for_rotation() to service_role;
 grant execute on function public.get_current_login_profile(uuid) to service_role;
+
+revoke all on function public.cleanup_orphaned_synthetic_auth_users() from public, anon, authenticated;
+grant execute on function public.cleanup_orphaned_synthetic_auth_users() to service_role;
+
+revoke all on function public.revoke_user_refresh_tokens(uuid) from public, anon, authenticated;
+grant execute on function public.revoke_user_refresh_tokens(uuid) to service_role;
 
 -- -----------------------------------------------------------------------------
 -- Realtime publications

@@ -209,10 +209,25 @@ Deno.serve(async (req: Request) => {
     revoked.push(t);
   }
 
+  // Sweep orphan auth.users rows (synthetic email, no matching profile). This
+  // self-heals the project against blocked re-provisioning of any pass-ID —
+  // whether the orphan came from a prior schema reapply, a failed provision
+  // rollback, or this revoke's own deleteUser-failure fallback at line ~175.
+  let orphansCleaned = 0;
+  const { data: cleanCount, error: cleanErr } = await service.rpc(
+    "cleanup_orphaned_synthetic_auth_users",
+  );
+  if (cleanErr) {
+    errors.push({ pass_id: "(cleanup)", message: `cleanup failed: ${cleanErr.message}` });
+  } else if (typeof cleanCount === "number") {
+    orphansCleaned = cleanCount;
+  }
+
   return jsonResponse(req, {
     ok: errors.length === 0,
     revoked,
     skipped,
     errors,
+    orphans_cleaned: orphansCleaned,
   });
 });

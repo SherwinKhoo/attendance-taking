@@ -3,6 +3,12 @@
 #
 # Run from the project root. You'll be prompted to log in if not already.
 #
+# Usage:
+#   bash scripts/deploy-functions.sh
+#
+#   # Or with an explicit project ref:
+#   SUPABASE_PROJECT_REF=<ref> bash scripts/deploy-functions.sh
+#
 # Prereqs:
 #   - You're a member of the Supabase project.
 #   - You know the project ref (the slug before .supabase.co in the URL).
@@ -24,6 +30,9 @@ npx --yes supabase functions deploy provision
 
 echo "==> Deploying revoke"
 npx --yes supabase functions deploy revoke
+
+echo "==> Deploying reset-password"
+npx --yes supabase functions deploy reset-password
 
 echo "==> Deploying rotate-daily (JWT verification disabled; this function"
 echo "    uses its own shared-secret auth via ROTATE_DAILY_TOKEN)"

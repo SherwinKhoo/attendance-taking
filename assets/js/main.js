@@ -91,7 +91,7 @@ app.innerHTML = `
     Connection lost. Submissions will fail until you reconnect.
   </div>
 
-  <section class="zone" id="attendance-zone" aria-labelledby="attendance-title">
+  <section class="zone" id="attendance-zone" aria-labelledby="attendance-title" hidden>
     <div class="zone-heading">
       <div><h2 id="attendance-title">Submit attendance</h2></div>
       <span class="status" id="attendance-login-status"></span>
@@ -104,7 +104,7 @@ app.innerHTML = `
     <p class="status-line" id="attendance-status">Scan the session QR code to submit attendance.</p>
   </section>
 
-  <section class="zone" id="geofence-zone" aria-labelledby="geofence-title">
+  <section class="zone" id="geofence-zone" aria-labelledby="geofence-title" hidden>
     <div class="zone-heading">
       <div><h2 id="geofence-title">Check in (campus grounds)</h2></div>
       <button id="refresh-open-sessions" type="button">Refresh</button>
@@ -115,7 +115,7 @@ app.innerHTML = `
     <p class="status-line" id="geofence-status"></p>
   </section>
 
-  <section class="zone" id="session-zone" aria-labelledby="session-title">
+  <section class="zone" id="session-zone" aria-labelledby="session-title" hidden>
     <div class="zone-heading">
       <div><h2 id="session-title">Generate Session</h2></div>
       <button id="restore-session" type="button">Restore latest</button>
@@ -511,6 +511,16 @@ function attachWakeRecovery() {
 async function onAuthenticated() {
   try {
     const profile = await rpc("get_current_login_profile", { p_device_install_id: state.deviceInstallId });
+    if (!profile) {
+      // Profile row is gone but the JWT is still valid — usually because a
+      // destructive schema reapply dropped public.profiles while leaving
+      // auth.users intact. Tear down the in-app state cleanly (handleLogout
+      // signs out + clears local storage + calls renderLoggedOut, which
+      // hides every zone and opens the login modal).
+      els.loginStatus.textContent = "Your account is no longer active. Please sign in again.";
+      await handleLogout();
+      return;
+    }
     state.profile = profile;
     if (profile.archived_at) {
       els.loginStatus.textContent = "This account has been archived. Please contact your administrator.";
@@ -544,6 +554,10 @@ async function onAuthenticated() {
     // Note: latest session is NOT auto-restored on login/refresh.
     // The user must click "Restore latest" explicitly.
   } catch (err) {
+    // Any error before renderLoggedIn means the UI is half-rendered (the
+    // initial HTML zones are still visible by default). Force the logged-out
+    // shell so the user sees only the login modal, then surface the error.
+    renderLoggedOut();
     els.loginStatus.textContent = err.message;
   }
 }
@@ -948,14 +962,28 @@ async function subscribeNotifications(profile) {
 
 async function handleProfileUpdate(payload) {
   const archivedAt = payload?.new?.archived_at;
-  if (!archivedAt) return;
-  // Account was revoked. Surface a brief notice, then force-logout. The
-  // server has already deleted auth.users for this profile in the revoke
-  // Edge Function, so any subsequent API call would 401 anyway; this just
-  // makes the UI react immediately instead of waiting for the next request.
-  showToast("This account has been revoked. Signing you out.");
-  await handleLogout();
-  els.loginStatus.textContent = "This account has been revoked. Please contact your administrator.";
+  if (archivedAt) {
+    // Account was revoked. Surface a brief notice, then force-logout. The
+    // server has already deleted auth.users for this profile in the revoke
+    // Edge Function, so any subsequent API call would 401 anyway; this just
+    // makes the UI react immediately instead of waiting for the next request.
+    showToast("This account has been revoked. Signing you out.");
+    await handleLogout();
+    els.loginStatus.textContent = "This account has been revoked. Please contact your administrator.";
+    return;
+  }
+
+  // Admin reset this account's password back to today's temp. Detect via the
+  // password_set_at → NULL transition: we know it's a transition (not an
+  // unclaimed initial render) because our locally-cached profile recorded a
+  // non-null password_set_at. Force-logout immediately; the server has also
+  // revoked refresh tokens via auth.admin.signOut.
+  const newPasswordSetAt = payload?.new?.password_set_at;
+  if (newPasswordSetAt === null && state.profile?.password_set_at) {
+    showToast("Your password has been reset. Signing you out.");
+    await handleLogout();
+    els.loginStatus.textContent = "Your password was reset by an administrator. Sign in with today's daily temp.";
+  }
 }
 
 async function refreshNotifications() {

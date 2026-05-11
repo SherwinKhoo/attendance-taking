@@ -172,6 +172,16 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
       </div>
 
       <div class="admin-section">
+        <h3>Reset password</h3>
+        <p class="status-line">Sends the user back to today's per-campus daily temp. Unclaimed accounts are not touched. Claimed accounts are signed out from every device.</p>
+        <div class="admin-row">
+          <input id="admin-reset-pass-id" type="text" placeholder="Pass ID" />
+          <button id="admin-reset-submit" type="button">Reset to daily temp</button>
+        </div>
+        <pre id="admin-reset-result" class="admin-output" hidden></pre>
+      </div>
+
+      <div class="admin-section">
         <h3>Post notification</h3>
         <input id="admin-notif-title" type="text" placeholder="Title (max 200 chars)" />
         <textarea id="admin-notif-body" rows="3" placeholder="Body (max 2000 chars)"></textarea>
@@ -211,6 +221,7 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
     bind("admin-provision-submit", handleProvision, "admin-provision-result");
     document.getElementById("admin-provision-file").addEventListener("change", handleProvisionFile);
     bind("admin-revoke-submit", handleRevoke, "admin-revoke-result");
+    bind("admin-reset-submit", handleReset, "admin-reset-result");
     bind("admin-notif-submit", handleNotify, "admin-notif-status");
     bind("admin-audit-prev", () => {
       state.auditOffset = Math.max(0, state.auditOffset - 100);
@@ -472,6 +483,38 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
       return;
     }
     result.textContent = JSON.stringify(data, null, 2);
+    refreshUnclaimed();
+  }
+
+  // ---------------------------------------------------------------------------
+  // Reset password
+  // ---------------------------------------------------------------------------
+
+  async function handleReset() {
+    const passId = document.getElementById("admin-reset-pass-id").value.trim().toUpperCase();
+    const result = document.getElementById("admin-reset-result");
+    result.hidden = false;
+    if (!passId) {
+      result.textContent = "Pass ID is required.";
+      return;
+    }
+    result.textContent = "Calling reset-password function...";
+    const { data, error } = await invokeWithTimeout("reset-password", {
+      body: { pass_id: passId },
+    });
+    if (error) {
+      result.textContent = `reset-password failed: ${error.message}`;
+      return;
+    }
+    if (!data?.ok) {
+      result.textContent = `reset-password failed: ${data?.error ?? "unknown error"}`;
+      return;
+    }
+    const verb = data.claimed_before
+      ? "Password reset. User signed out from all devices."
+      : "Unclaimed account — no change. Re-share today's temp.";
+    result.textContent = `${verb}\nPass ID: ${data.pass_id}\nCampus: ${data.campus}\nToday's temp: ${data.temp_password}`;
+    document.getElementById("admin-reset-pass-id").value = "";
     refreshUnclaimed();
   }
 
