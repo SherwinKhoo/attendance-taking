@@ -348,6 +348,7 @@ setDefaultStartTime();
 applyDarkMode(localStorage.getItem(STORAGE_KEYS.darkMode) === "1");
 attachEventListeners();
 attachConnectivityListeners();
+attachWakeRecovery();
 bootstrapAuth();
 
 // -----------------------------------------------------------------------------
@@ -374,7 +375,33 @@ function createSupabaseClient() {
     return null;
   }
   return window.supabase.createClient(url, key, {
-    auth: { persistSession: true, autoRefreshToken: true },
+    auth: {
+      persistSession: true,
+      autoRefreshToken: true,
+      // Wrap the default `navigator.locks` lock with an AbortController so a
+      // deadlocked lock (orphaned by a hard refresh, a crashed tab, or an OS
+      // sleep that killed the refresh-token fetch) cannot wedge every
+      // subsequent Supabase call. Falls through to fn() if the lock can't be
+      // acquired in time — at worst, two same-browser tabs race a refresh and
+      // one is bounced to login. Strictly better than an app-wide silent hang.
+      lock: async (name, acquireTimeoutMs, fn) => {
+        if (!globalThis.navigator?.locks?.request) return fn();
+        const ctrl = new AbortController();
+        const timer = setTimeout(() => ctrl.abort(), acquireTimeoutMs || 10000);
+        try {
+          return await navigator.locks.request(
+            name,
+            { mode: "exclusive", signal: ctrl.signal },
+            fn,
+          );
+        } catch (err) {
+          if (err?.name === "AbortError") return fn();
+          throw err;
+        } finally {
+          clearTimeout(timer);
+        }
+      },
+    },
   });
 }
 
@@ -382,11 +409,35 @@ function syntheticEmail(passId) {
   return `${String(passId).trim().toLowerCase()}@passid.local`;
 }
 
+// Race a promise against a timeout. On timeout, reject with a user-facing
+// message so a wedged Supabase call surfaces as a visible error instead of a
+// silently hung UI. Used by rpc(), auth bootstrap, and admin functions.invoke().
+function withTimeout(promise, ms, label) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error(
+        `${label} timed out after ${Math.round(ms / 1000)}s. Network or session may be stalled — try reloading.`,
+      )),
+      ms,
+    );
+  });
+  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+}
+
+const TIMEOUT_RPC_MS = 15000;
+const TIMEOUT_AUTH_MS = 15000;
+const TIMEOUT_INVOKE_MS = 20000;
+
 async function rpc(name, params) {
   if (!state.supabase) {
     throw new Error("Supabase configuration is required.");
   }
-  const { data, error } = await state.supabase.rpc(name, params ?? {});
+  const { data, error } = await withTimeout(
+    state.supabase.rpc(name, params ?? {}),
+    TIMEOUT_RPC_MS,
+    `rpc("${name}")`,
+  );
   if (error) throw new Error(error.message);
   return data;
 }
@@ -401,7 +452,18 @@ async function bootstrapAuth() {
     els.loginStatus.textContent = "Supabase configuration is required. Add config.local.js locally or configure GitHub Pages to publish runtime config.";
     return;
   }
-  const { data, error } = await state.supabase.auth.getSession();
+  let data, error;
+  try {
+    ({ data, error } = await withTimeout(
+      state.supabase.auth.getSession(),
+      TIMEOUT_AUTH_MS,
+      "auth.getSession()",
+    ));
+  } catch (err) {
+    renderLoggedOut();
+    els.loginStatus.textContent = `${err.message} If this persists, reload the page.`;
+    return;
+  }
   if (error) {
     els.loginStatus.textContent = error.message;
   }
@@ -421,13 +483,39 @@ async function bootstrapAuth() {
   });
 }
 
+// When the tab returns to the foreground after long idle, the access token may
+// have expired and the OS may have killed the refresh-token socket. Nudge the
+// Supabase client to refresh proactively so the user's next click doesn't hang
+// for the watchdog timeout.
+function attachWakeRecovery() {
+  const nudge = async () => {
+    if (!state.supabase || document.visibilityState !== "visible") return;
+    try {
+      await withTimeout(
+        state.supabase.auth.getSession(),
+        TIMEOUT_AUTH_MS,
+        "auth.getSession() on wake",
+      );
+    } catch {
+      // Swallow — the next user action will hit its own watchdog and surface
+      // an error there. We don't want to spam the UI on every focus event.
+    }
+  };
+  document.addEventListener("visibilitychange", nudge);
+  window.addEventListener("focus", nudge);
+}
+
 async function onAuthenticated() {
   try {
     const profile = await rpc("get_current_login_profile", { p_device_install_id: state.deviceInstallId });
     state.profile = profile;
     if (profile.archived_at) {
       els.loginStatus.textContent = "This account has been archived. Please contact your administrator.";
-      await state.supabase.auth.signOut();
+      try {
+        await withTimeout(state.supabase.auth.signOut(), TIMEOUT_AUTH_MS, "auth.signOut()");
+      } catch (err) {
+        console.warn("[auth] signOut error (continuing):", err);
+      }
       return;
     }
     if (profile.needs_password_change) {
@@ -650,10 +738,20 @@ async function handleAuthSubmit(event) {
     return;
   }
   els.loginStatus.textContent = "Signing in...";
-  const { error } = await state.supabase.auth.signInWithPassword({
-    email: syntheticEmail(passId),
-    password,
-  });
+  let error;
+  try {
+    ({ error } = await withTimeout(
+      state.supabase.auth.signInWithPassword({
+        email: syntheticEmail(passId),
+        password,
+      }),
+      TIMEOUT_AUTH_MS,
+      "signInWithPassword",
+    ));
+  } catch (err) {
+    els.loginStatus.textContent = err.message;
+    return;
+  }
   if (error) {
     els.loginStatus.textContent = "Pass ID or password is incorrect.";
     return;
@@ -667,7 +765,11 @@ async function handleLogout() {
   // where a stale access token (e.g. after a destructive schema reapply)
   // makes a global signOut throw and never emit SIGNED_OUT.
   try {
-    await state.supabase.auth.signOut({ scope: "local" });
+    await withTimeout(
+      state.supabase.auth.signOut({ scope: "local" }),
+      TIMEOUT_AUTH_MS,
+      "auth.signOut()",
+    );
   } catch (err) {
     console.warn("[auth] signOut error (continuing):", err);
   }
@@ -731,16 +833,36 @@ async function handlePasswordSubmit() {
     // Verify old password by re-authenticating. signInWithPassword refreshes
     // the session on success and yields a clear error on failure, without
     // requiring a separate "verify only" RPC.
-    const { error: reauthErr } = await state.supabase.auth.signInWithPassword({
-      email: syntheticEmail(passId),
-      password: oldPassword,
-    });
+    let reauthErr;
+    try {
+      ({ error: reauthErr } = await withTimeout(
+        state.supabase.auth.signInWithPassword({
+          email: syntheticEmail(passId),
+          password: oldPassword,
+        }),
+        TIMEOUT_AUTH_MS,
+        "signInWithPassword (re-auth)",
+      ));
+    } catch (err) {
+      els.passwordDialogValidation.textContent = err.message;
+      return;
+    }
     if (reauthErr) {
       els.passwordDialogValidation.textContent = "Current password is incorrect.";
       return;
     }
 
-    const { error: updateErr } = await state.supabase.auth.updateUser({ password: newPassword });
+    let updateErr;
+    try {
+      ({ error: updateErr } = await withTimeout(
+        state.supabase.auth.updateUser({ password: newPassword }),
+        TIMEOUT_AUTH_MS,
+        "auth.updateUser",
+      ));
+    } catch (err) {
+      els.passwordDialogValidation.textContent = err.message;
+      return;
+    }
     if (updateErr) {
       els.passwordDialogValidation.textContent = updateErr.message;
       return;
@@ -834,12 +956,24 @@ async function handleProfileUpdate(payload) {
 }
 
 async function refreshNotifications() {
-  const { data, error } = await state.supabase
-    .from("notifications")
-    .select("id, title, body, link_url, pinned, created_at, expires_at")
-    .order("pinned", { ascending: false })
-    .order("created_at", { ascending: false })
-    .limit(50);
+  let data, error;
+  try {
+    ({ data, error } = await withTimeout(
+      state.supabase
+        .from("notifications")
+        .select("id, title, body, link_url, pinned, created_at, expires_at")
+        .order("pinned", { ascending: false })
+        .order("created_at", { ascending: false })
+        .limit(50),
+      TIMEOUT_RPC_MS,
+      "notifications.select",
+    ));
+  } catch (err) {
+    console.warn("[notifications]", err.message);
+    state.notifications = [];
+    renderNotifications();
+    return;
+  }
   if (error) {
     state.notifications = [];
   } else {
@@ -1366,4 +1500,9 @@ function escapeHtml(value) {
 }
 
 // Exposed for admin.js to share the helpers without re-implementing.
-window.AttendanceMain = { rpc, getSupabase: () => state.supabase };
+window.AttendanceMain = {
+  rpc,
+  getSupabase: () => state.supabase,
+  withTimeout,
+  TIMEOUT_INVOKE_MS,
+};

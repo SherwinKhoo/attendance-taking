@@ -26,6 +26,16 @@
     auditOffset: 0,
   };
 
+  // Edge functions can cold-start; budget 20 s. withTimeout is provided by
+  // main.js via window.AttendanceMain so a wedged Supabase client surfaces as
+  // a visible error instead of a silent hang.
+  function invokeWithTimeout(name, opts) {
+    const wt = window.AttendanceMain?.withTimeout;
+    const ms = window.AttendanceMain?.TIMEOUT_INVOKE_MS ?? 20000;
+    const call = state.supabase.functions.invoke(name, opts);
+    return wt ? wt(call, ms, `functions.invoke("${name}")`) : call;
+  }
+
   // Disable a button while an async handler runs and surface its error to the
   // given target. Eliminates the silent-failure path where an uncaught
   // rejection left the button visually responsive but functionally inert.
@@ -249,7 +259,7 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
     }
 
     result.textContent = "Calling provision function...";
-    const { data, error } = await state.supabase.functions.invoke("provision", {
+    const { data, error } = await invokeWithTimeout("provision", {
       body: {
         ingest_names: ingestName,
         rows: [
@@ -363,7 +373,7 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
     }
 
     result.textContent = "Calling provision function...";
-    const { data, error } = await state.supabase.functions.invoke("provision", {
+    const { data, error } = await invokeWithTimeout("provision", {
       body: { ingest_names: ingestNames, rows },
     });
     if (error) {
@@ -456,7 +466,7 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
     const result = document.getElementById("admin-revoke-result");
     result.hidden = false;
     result.textContent = "Calling revoke function...";
-    const { data, error } = await state.supabase.functions.invoke("revoke", { body });
+    const { data, error } = await invokeWithTimeout("revoke", { body });
     if (error) {
       result.textContent = `revoke failed: ${error.message}`;
       return;
