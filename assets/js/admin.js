@@ -17,6 +17,8 @@
 // =============================================================================
 
 (function () {
+  const PASS_ID_PATTERN = "[A-Za-z0-9][A-Za-z0-9_-]{2,31}";
+
   const state = {
     supabase: null,
     profile: null,
@@ -120,8 +122,9 @@
       <div class="admin-section">
         <h3>Add single account</h3>
         <div class="admin-row">
-          <input id="admin-single-pass-id" type="text" placeholder="Pass ID" />
-          <select id="admin-single-role">
+          <input id="admin-single-pass-id" type="text" placeholder="Pass ID"
+                 pattern="${PASS_ID_PATTERN}" maxlength="32" required />
+          <select id="admin-single-role" required>
             <option value="">Role…</option>
             <option value="user">user</option>
             <option value="representative">representative</option>
@@ -130,9 +133,9 @@
           </select>
         </div>
         <div class="admin-row">
-          <input id="admin-single-campus" type="text" placeholder="Campus" value="${state.profile.admin_campus_scope ?? ""}" />
-          <input id="admin-single-group" type="text" placeholder="Group" />
-          <input id="admin-single-subgroup" type="text" placeholder="Sub-group" />
+          <input id="admin-single-campus" type="text" placeholder="Campus" value="${state.profile.admin_campus_scope ?? ""}" required />
+          <input id="admin-single-group" type="text" placeholder="Group" required />
+          <input id="admin-single-subgroup" type="text" placeholder="Sub-group" required />
         </div>
         <div class="admin-row">
           <input id="admin-single-display-name" type="text" placeholder="Display name (optional)" />
@@ -147,7 +150,7 @@
 
       <div class="admin-section">
         <h3>Provision (CSV batch)</h3>
-        <p class="status-line">Required columns: <code>pass_id, role, campus, group_name, sub_group</code>.\nOptional: <code>display_name</code> (only ingested when the toggle below is on).</p>
+        <p class="status-line">Required columns: <code>pass_id, role, campus, group_name, sub_group</code>.<br>Optional: <code>display_name</code>.</p>
         <textarea id="admin-provision-csv" rows="8" placeholder="pass_id,role,campus,group_name,sub_group,display_name
 X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></textarea>
         <label class="toggle">
@@ -160,7 +163,6 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
         </div>
         <pre id="admin-provision-result" class="admin-output" hidden></pre>
       </div>
-
       <div class="admin-section">
         <h3>Revoke</h3>
         <div class="admin-row">
@@ -174,12 +176,12 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
         </div>
         <pre id="admin-revoke-result" class="admin-output" hidden></pre>
       </div>
-
       <div class="admin-section">
         <h3>Reset password</h3>
         <p class="status-line">Sends the user back to today's per-campus daily temp. Unclaimed accounts are not touched. Claimed accounts are signed out from every device.</p>
         <div class="admin-row">
-          <input id="admin-reset-pass-id" type="text" placeholder="Pass ID" />
+          <input id="admin-reset-pass-id" type="text" placeholder="Pass ID"
+                 pattern="${PASS_ID_PATTERN}" maxlength="32" required />
           <button id="admin-reset-submit" type="button">Reset to daily temp</button>
         </div>
         <pre id="admin-reset-result" class="admin-output" hidden></pre>
@@ -187,8 +189,8 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
 
       <div class="admin-section">
         <h3>Post notification</h3>
-        <input id="admin-notif-title" type="text" placeholder="Title (max 200 chars)" />
-        <textarea id="admin-notif-body" rows="3" placeholder="Body (max 2000 chars)"></textarea>
+        <input id="admin-notif-title" type="text" placeholder="Title (max 200 chars)" maxlength="200" required />
+        <textarea id="admin-notif-body" rows="3" placeholder="Body (max 2000 chars)" maxlength="2000" required></textarea>
         <input id="admin-notif-link" type="url" placeholder="Optional link URL" />
         <div class="admin-row">
           <input id="admin-notif-campus" type="text" placeholder="Target campus (blank = any)" value="${state.profile.admin_campus_scope ?? ""}" />
@@ -265,11 +267,30 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
     );
   }
 
+  function reportValidityFor(ids) {
+    for (const id of ids) {
+      const el = document.getElementById(id);
+      if (el && !el.reportValidity()) return false;
+    }
+    return true;
+  }
+
   // ---------------------------------------------------------------------------
   // Single-add
   // ---------------------------------------------------------------------------
 
   async function handleSingleAdd() {
+    if (
+      !reportValidityFor([
+        "admin-single-pass-id",
+        "admin-single-role",
+        "admin-single-campus",
+        "admin-single-group",
+        "admin-single-subgroup",
+      ])
+    ) {
+      return;
+    }
     const passId = document
       .getElementById("admin-single-pass-id")
       .value.trim()
@@ -577,6 +598,7 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
   // ---------------------------------------------------------------------------
 
   async function handleReset() {
+    if (!reportValidityFor(["admin-reset-pass-id"])) return;
     const passId = document
       .getElementById("admin-reset-pass-id")
       .value.trim()
@@ -612,6 +634,15 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
   // ---------------------------------------------------------------------------
 
   async function handleNotify() {
+    if (
+      !reportValidityFor([
+        "admin-notif-title",
+        "admin-notif-body",
+        "admin-notif-link",
+      ])
+    ) {
+      return;
+    }
     const title = document.getElementById("admin-notif-title").value.trim();
     const body = document.getElementById("admin-notif-body").value.trim();
     const linkUrl =

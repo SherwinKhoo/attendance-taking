@@ -10,8 +10,9 @@
 //     { campus: "PROTO" }                        -- bulk by campus
 //     { campus: "PROTO", group_name: "Y", sub_group: "Z" } -- narrower bulk
 //
-//   At least one selector is required. Filter and pass_ids may be combined;
-//   the union of matches is revoked. Already-archived rows are skipped.
+//   At least one selector is required. All selectors are AND-ed: a row must
+//   satisfy every provided selector to be revoked. Already-archived rows are
+//   skipped.
 //
 // Response:
 //   {
@@ -101,67 +102,37 @@ Deno.serve(async (req: Request) => {
 
   const service = serviceRoleClient();
 
-  // Resolve target rows.
+  // Resolve target rows. All provided selectors are AND-ed so that e.g.
+  // (campus=A, pass_ids=[U-001]) revokes only U-001 in Campus A, not every
+  // U-001 across campuses nor every profile in Campus A.
   let query = service
     .from("profiles")
     .select("profile_id, pass_id, campus")
     .is("archived_at", null);
 
-  // Bulk filter selectors.
   const effectiveCampus = campus ?? caller.admin_campus_scope ?? null;
   if (effectiveCampus) query = query.eq("campus", effectiveCampus);
   if (groupName) query = query.eq("group_name", groupName);
   if (subGroup) query = query.eq("sub_group", subGroup);
+  if (passIds.length > 0) query = query.in("pass_id", passIds);
 
-  // Explicit pass_ids (union with filter).
-  // Postgrest `.or()` would let us combine, but the simpler model: if pass_ids
-  // were given, we ALSO fetch them separately and merge, since the filter may
-  // be empty. If only filter is given, the query above is the whole set.
-  let bulkRows: ProfileMatch[] = [];
-  if (campus || groupName || subGroup) {
-    const { data, error } = await query;
-    if (error) {
-      return jsonResponse(req, 
-        { ok: false, error: `profiles lookup failed: ${error.message}` },
-        500,
-      );
-    }
-    bulkRows = (data as ProfileMatch[]) ?? [];
+  const { data: targetData, error: targetErr } = await query;
+  if (targetErr) {
+    return jsonResponse(req,
+      { ok: false, error: `profiles lookup failed: ${targetErr.message}` },
+      500,
+    );
   }
-
-  let listRows: ProfileMatch[] = [];
-  if (passIds.length > 0) {
-    let listQuery = service
-      .from("profiles")
-      .select("profile_id, pass_id, campus")
-      .is("archived_at", null)
-      .in("pass_id", passIds);
-    if (caller.admin_campus_scope) {
-      listQuery = listQuery.eq("campus", caller.admin_campus_scope);
-    }
-    const { data, error } = await listQuery;
-    if (error) {
-      return jsonResponse(req, 
-        { ok: false, error: `profiles lookup failed: ${error.message}` },
-        500,
-      );
-    }
-    listRows = (data as ProfileMatch[]) ?? [];
-  }
-
-  // Merge unique by profile_id.
-  const merged = new Map<string, ProfileMatch>();
-  for (const r of [...bulkRows, ...listRows]) merged.set(r.profile_id, r);
-  const targets = Array.from(merged.values());
+  const targets = (targetData as ProfileMatch[]) ?? [];
 
   const skipped: { pass_id: string; reason: string }[] = [];
   if (passIds.length > 0) {
-    const found = new Set(listRows.map((r) => r.pass_id));
+    const found = new Set(targets.map((r) => r.pass_id));
     for (const pid of passIds) {
       if (!found.has(pid)) {
         skipped.push({
           pass_id: pid,
-          reason: "no active profile (already archived or unknown).",
+          reason: "no active profile in the given scope (already archived, unknown, or outside campus/group filter).",
         });
       }
     }

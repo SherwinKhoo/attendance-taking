@@ -26,9 +26,13 @@ const STORAGE_KEYS = {
 
 const CONFIG = {
   PASS_ID_REGEX: /^[A-Z0-9][A-Z0-9_-]{2,31}$/i,
+  PASS_ID_PATTERN: "[A-Za-z0-9][A-Za-z0-9_-]{2,31}",
   PASSWORD_REGEX: /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*._-])[A-Za-z0-9!@#$%^&*._-]{10,16}$/,
+  PASSWORD_PATTERN: "(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[!@#$%^&*._-])[A-Za-z0-9!@#$%^&*._-]{10,16}",
+  PASSWORD_ALLOWED_CHARS_REGEX: /^[A-Za-z0-9!@#$%^&*._-]*$/,
   PASSWORD_ALLOWED_MESSAGE:
     "Use 10-16 characters with upper and lower case letters, numbers, and an approved symbol (!@#$%^&*._-).",
+  PASSWORD_UNSUPPORTED_MESSAGE: "This field contains unsupported characters.",
   COORDINATE_DECIMALS: 6,
   LOCATION_MARGIN_METRES: 50,
   GEOLOCATION_OPTIONS: {
@@ -94,7 +98,6 @@ app.innerHTML = `
   <section class="zone" id="attendance-zone" aria-labelledby="attendance-title" hidden>
     <div class="zone-heading">
       <div><h2 id="attendance-title">Submit attendance</h2></div>
-      <span class="status" id="attendance-login-status"></span>
     </div>
     <video id="attendance-camera" class="camera" autoplay muted playsinline></video>
     <div class="action-row">
@@ -121,30 +124,35 @@ app.innerHTML = `
       <button id="restore-session" type="button">Restore latest</button>
     </div>
     <form id="session-form" class="form-grid">
-      <label>
-        <span>Session</span>
-        <input id="session-name" name="session-name" autocomplete="off" required placeholder="Session Name" />
-      </label>
-      <label>
-        <span>Start date</span>
-        <input id="session-date" name="session-date" type="date" required />
-      </label>
-      <label>
-        <span>Start time</span>
-        <input id="session-time" name="session-time" type="time" required />
-      </label>
-      <label>
-        <span>Timeout</span>
-        <input id="grace-period" name="grace-period" type="number" min="0" step="1" value="0" required />
-      </label>
-      <label>
-        <span>QR format</span>
-        <!-- Aztec and MaxiCode were dropped: MaxiCode caps at 138 bytes (mode 4)
-             which the session JSON exceeds; Aztec was UI clutter for one-format use. -->
-        <select id="barcode-format" name="barcode-format">
-          <option value="QRCode">QR Code</option>
-        </select>
-      </label>
+      <fieldset class="form-field">
+        <legend>Session</legend>
+        <label class="field-control" aria-label="Session">
+          <input id="session-name" name="session-name" autocomplete="off" maxlength="120" required placeholder="Session Name" />
+        </label>
+      </fieldset>
+      <fieldset class="form-field">
+        <legend>Start date</legend>
+        <label class="field-control" aria-label="Start date">
+          <input id="session-date" name="session-date" type="date" required />
+        </label>
+      </fieldset>
+      <fieldset class="form-field">
+        <legend>Start time</legend>
+        <label class="field-control" aria-label="Start time">
+          <input id="session-time" name="session-time" type="time" required />
+        </label>
+      </fieldset>
+      <fieldset class="form-field">
+        <legend>Timeout</legend>
+        <label class="field-control" aria-label="Timeout">
+          <input id="grace-period" name="grace-period" type="number" min="0" step="1" value="0" required />
+        </label>
+      </fieldset>
+      <fieldset class="form-field is-hidden-format">
+        <legend>QR format</legend>
+        <input id="barcode-format" name="barcode-format" type="hidden" value="QRCode" />
+        <div class="static-form-value">QR Code</div>
+      </fieldset>
       <fieldset class="checkin-modes">
         <legend>Check-in modes</legend>
         <label><input id="mode-qr" type="checkbox" checked /> QR scan</label>
@@ -183,13 +191,15 @@ app.innerHTML = `
       <p id="login-status" class="status-line">Sign in with your pass ID.</p>
       <label>
         <span>Pass ID</span>
-        <input id="pass-id" name="pass-id" autocomplete="username" placeholder="e.g. A-001" required />
+        <input id="pass-id" name="pass-id" autocomplete="username" placeholder="e.g. A-001"
+               pattern="${CONFIG.PASS_ID_PATTERN}" maxlength="32" required />
       </label>
       <label>
         <span>Password</span>
         <span class="password-field">
           <input id="password" name="password" type="password" autocomplete="current-password"
-                 placeholder="10-16 characters" required />
+                 placeholder="10-16 characters" minlength="10" maxlength="16"
+                 pattern="${CONFIG.PASSWORD_PATTERN}" title="${CONFIG.PASSWORD_ALLOWED_MESSAGE}" required />
           <button id="password-visibility-toggle" type="button" aria-controls="password" aria-pressed="false">Show</button>
         </span>
       </label>
@@ -206,21 +216,27 @@ app.innerHTML = `
       <label>
         <span>Current password</span>
         <span class="password-field">
-          <input id="password-old" type="password" autocomplete="current-password" required />
+          <input id="password-old" type="password" autocomplete="current-password"
+                 minlength="10" maxlength="16" pattern="${CONFIG.PASSWORD_PATTERN}"
+                 title="${CONFIG.PASSWORD_ALLOWED_MESSAGE}" required />
           <button id="password-old-toggle" type="button" aria-controls="password-old" aria-pressed="false">Show</button>
         </span>
       </label>
       <label>
         <span>New password</span>
         <span class="password-field">
-          <input id="password-new" type="password" autocomplete="new-password" required />
+          <input id="password-new" type="password" autocomplete="new-password"
+                 minlength="10" maxlength="16" pattern="${CONFIG.PASSWORD_PATTERN}"
+                 title="${CONFIG.PASSWORD_ALLOWED_MESSAGE}" required />
           <button id="password-new-toggle" type="button" aria-controls="password-new" aria-pressed="false">Show</button>
         </span>
       </label>
       <label>
         <span>Confirm new password</span>
         <span class="password-field">
-          <input id="password-confirm" type="password" autocomplete="new-password" required />
+          <input id="password-confirm" type="password" autocomplete="new-password"
+                 minlength="10" maxlength="16" pattern="${CONFIG.PASSWORD_PATTERN}"
+                 title="${CONFIG.PASSWORD_ALLOWED_MESSAGE}" required />
           <button id="password-confirm-toggle" type="button" aria-controls="password-confirm" aria-pressed="false">Show</button>
         </span>
       </label>
@@ -239,11 +255,13 @@ app.innerHTML = `
         <button id="settings-close" type="button" class="icon-btn" aria-label="Close">&times;</button>
       </header>
       <section class="settings-section">
-        <label class="switch">
-          <input id="dark-mode-toggle" type="checkbox" />
-          <span class="switch-track" aria-hidden="true"></span>
-          <span class="switch-label">Dark mode</span>
-        </label>
+        <div class="settings-mode-row">
+          <span class="status" id="attendance-login-status"></span>
+          <label class="switch" aria-label="Dark mode">
+            <input id="dark-mode-toggle" type="checkbox" />
+            <span class="switch-track" aria-hidden="true"></span>
+          </label>
+        </div>
         <button id="settings-change-password" type="button">Change password</button>
         <button id="settings-logout" type="button">Log out</button>
       </section>
@@ -637,7 +655,7 @@ function renderLoggedIn(profile) {
   // Server-side `create_attendance_session` still rejects unauthorised
   // creators as a backstop.
   els.sessionZone.hidden = profile.role === "user";
-  els.attendanceLoginStatus.textContent = `Logged in: ${profile.pass_id ?? profile.profile_id}`;
+  els.attendanceLoginStatus.textContent = profile.pass_id ?? profile.profile_id;
 }
 
 function closeIfOpen(dialogEl) {
@@ -691,6 +709,7 @@ function attachEventListeners() {
   bindCooldown(els.exportCsv, handleCsvExport);
   bindCooldown(els.refreshOpenSessions, refreshOpenSessions);
   els.loginForm.addEventListener("submit", handleAuthSubmit);
+  bindPasswordCharacterPolicy(els.password);
   els.passwordVisibilityToggle.addEventListener("click", () =>
     toggleFieldVisibility(els.password, els.passwordVisibilityToggle),
   );
@@ -709,6 +728,10 @@ function attachEventListeners() {
   els.passwordConfirmToggle.addEventListener("click", () =>
     toggleFieldVisibility(els.passwordConfirm, els.passwordConfirmToggle),
   );
+  [els.passwordOld, els.passwordNew, els.passwordConfirm].forEach((input) => {
+    bindPasswordCharacterPolicy(input);
+    input.addEventListener("input", syncPasswordCustomValidity);
+  });
   els.confirmSubmit.addEventListener("click", (event) => {
     event.preventDefault();
     submitPendingAttendance();
@@ -850,6 +873,30 @@ function toggleFieldVisibility(inputEl, toggleBtn) {
   toggleBtn.setAttribute("aria-pressed", String(!isVisible));
 }
 
+function bindPasswordCharacterPolicy(inputEl) {
+  if (!inputEl) return;
+  inputEl.addEventListener("beforeinput", (event) => {
+    if (!event.data || CONFIG.PASSWORD_ALLOWED_CHARS_REGEX.test(event.data)) {
+      return;
+    }
+    event.preventDefault();
+    inputEl.setCustomValidity(CONFIG.PASSWORD_UNSUPPORTED_MESSAGE);
+    inputEl.reportValidity();
+  });
+  inputEl.addEventListener("paste", (event) => {
+    const pasted = event.clipboardData?.getData("text") ?? "";
+    if (CONFIG.PASSWORD_ALLOWED_CHARS_REGEX.test(pasted)) return;
+    event.preventDefault();
+    inputEl.setCustomValidity(CONFIG.PASSWORD_UNSUPPORTED_MESSAGE);
+    inputEl.reportValidity();
+  });
+  inputEl.addEventListener("input", () => {
+    if (CONFIG.PASSWORD_ALLOWED_CHARS_REGEX.test(inputEl.value)) {
+      inputEl.setCustomValidity("");
+    }
+  });
+}
+
 // -----------------------------------------------------------------------------
 // Password change modal
 // -----------------------------------------------------------------------------
@@ -861,6 +908,7 @@ function openPasswordDialog({ title, intro, force }) {
   els.passwordNew.value = "";
   els.passwordConfirm.value = "";
   els.passwordDialogValidation.textContent = "";
+  syncPasswordCustomValidity();
   els.passwordCancel.textContent = force ? "Sign out" : "Cancel";
   els.passwordDialog.showModal();
 }
@@ -870,13 +918,12 @@ function closePasswordDialog() {
 }
 
 async function handlePasswordSubmit() {
+  syncPasswordCustomValidity();
+  if (!els.passwordForm.reportValidity()) return;
+
   const oldPassword = els.passwordOld.value;
   const newPassword = els.passwordNew.value;
   const confirmPassword = els.passwordConfirm.value;
-  if (newPassword !== confirmPassword) {
-    els.passwordDialogValidation.textContent = "New password and confirmation do not match.";
-    return;
-  }
   if (!CONFIG.PASSWORD_REGEX.test(newPassword)) {
     els.passwordDialogValidation.textContent = CONFIG.PASSWORD_ALLOWED_MESSAGE;
     return;
@@ -946,6 +993,30 @@ async function handlePasswordSubmit() {
   await onAuthenticated();
 }
 
+function syncPasswordCustomValidity() {
+  if (!els.passwordOld || !els.passwordNew || !els.passwordConfirm) return;
+  for (const input of [els.passwordOld, els.passwordNew, els.passwordConfirm]) {
+    input.setCustomValidity("");
+    if (!CONFIG.PASSWORD_ALLOWED_CHARS_REGEX.test(input.value)) {
+      input.setCustomValidity(CONFIG.PASSWORD_UNSUPPORTED_MESSAGE);
+    }
+  }
+  if (
+    els.passwordConfirm.value &&
+    els.passwordNew.value !== els.passwordConfirm.value
+  ) {
+    els.passwordConfirm.setCustomValidity("New password and confirmation do not match.");
+    return;
+  }
+  if (
+    els.passwordOld.value &&
+    els.passwordNew.value &&
+    els.passwordOld.value === els.passwordNew.value
+  ) {
+    els.passwordNew.setCustomValidity("New password must be different from current password.");
+  }
+}
+
 // -----------------------------------------------------------------------------
 // Toast
 // -----------------------------------------------------------------------------
@@ -1000,7 +1071,26 @@ async function subscribeNotifications(profile) {
       },
       (payload) => handleProfileUpdate(payload),
     )
+    .on(
+      "postgres_changes",
+      {
+        // Revoke now cascade-deletes the profile (auth.users → profiles
+        // ON DELETE CASCADE). The DELETE event is the only signal the
+        // client gets that the account is gone, so handle it explicitly.
+        event: "DELETE",
+        schema: "public",
+        table: "profiles",
+        filter: `profile_id=eq.${profile.profile_id}`,
+      },
+      () => handleProfileDelete(),
+    )
     .subscribe();
+}
+
+async function handleProfileDelete() {
+  showToast("This account has been revoked. Signing you out.");
+  await handleLogout();
+  els.loginStatus.textContent = "This account has been revoked. Please contact your administrator.";
 }
 
 async function handleProfileUpdate(payload) {
@@ -1017,12 +1107,13 @@ async function handleProfileUpdate(payload) {
   }
 
   // Admin reset this account's password back to today's temp. Detect via the
-  // password_set_at → NULL transition: we know it's a transition (not an
-  // unclaimed initial render) because our locally-cached profile recorded a
-  // non-null password_set_at. Force-logout immediately; the server has also
-  // revoked refresh tokens via auth.admin.signOut.
+  // password_set_at → NULL transition. Discriminator on our side is
+  // state.profile.needs_password_change: get_current_login_profile only
+  // exposes the boolean, not the raw timestamp, so we use it to confirm the
+  // locally-cached profile thinks the password *was* set (false) — i.e.
+  // this is a transition, not the user's initial unclaimed sign-in.
   const newPasswordSetAt = payload?.new?.password_set_at;
-  if (newPasswordSetAt === null && state.profile?.password_set_at) {
+  if (newPasswordSetAt === null && state.profile?.needs_password_change === false) {
     showToast("Your password has been reset. Signing you out.");
     await handleLogout();
     els.loginStatus.textContent = "Your password was reset by an administrator. Sign in with today's daily temp.";
@@ -1080,7 +1171,7 @@ function renderNotifications() {
       link.href = safeHref;
       link.target = "_blank";
       link.rel = "noopener noreferrer";
-      link.textContent = "Open link";
+      link.textContent = safeHref;
       li.append(link);
     }
     const meta = document.createElement("span");
