@@ -1,0 +1,76 @@
+// Shared CORS helpers for Edge Functions.
+//
+// Origin allowlist is read from the ALLOWED_ORIGINS env var (comma-separated).
+// If unset, falls back to "*" (open) so local development isn't blocked. Set
+// it to your production origin(s) on Supabase:
+//   npx supabase secrets set ALLOWED_ORIGINS=https://your-site.example,http://localhost:8011
+//
+// The function name is intentionally generic — every Edge Function imports the
+// same `corsHeaders` builder per request.
+
+const allowedOriginsEnv = Deno.env.get("ALLOWED_ORIGINS")?.trim() ?? "";
+const ALLOWED_ORIGINS = new Set(
+  allowedOriginsEnv
+    .split(",")
+    .map((s) => s.trim())
+    .filter(Boolean),
+);
+
+function originFor(req: Request): string {
+  const requested = req.headers.get("Origin") ?? "";
+  if (ALLOWED_ORIGINS.size === 0) return "*";
+  return ALLOWED_ORIGINS.has(requested) ? requested : "";
+}
+
+export function corsHeaders(req: Request): Record<string, string> {
+  const origin = originFor(req);
+  if (!origin) {
+    // Disallowed origin — return only Vary so the browser doesn't cache an
+    // accidental Allow-Origin from a previous request.
+    return { "Vary": "Origin" };
+  }
+  return {
+    "Access-Control-Allow-Origin": origin,
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Vary": "Origin",
+  };
+}
+
+export function jsonResponse(req: Request, body: unknown, status = 200): Response;
+export function jsonResponse(body: unknown, status?: number): Response;
+export function jsonResponse(
+  reqOrBody: Request | unknown,
+  bodyOrStatus?: unknown,
+  status = 200,
+): Response {
+  // Two call shapes for backward compatibility:
+  //   jsonResponse(body, status?)            — legacy, returns "*" in headers
+  //   jsonResponse(req, body, status?)       — new, returns origin-aware headers
+  if (reqOrBody instanceof Request) {
+    return new Response(JSON.stringify(bodyOrStatus), {
+      status: status ?? 200,
+      headers: { ...corsHeaders(reqOrBody), "Content-Type": "application/json" },
+    });
+  }
+  const fallback = {
+    "Access-Control-Allow-Origin": ALLOWED_ORIGINS.size === 0 ? "*" : "",
+    "Access-Control-Allow-Headers":
+      "authorization, x-client-info, apikey, content-type",
+    "Access-Control-Allow-Methods": "POST, OPTIONS",
+    "Vary": "Origin",
+    "Content-Type": "application/json",
+  };
+  return new Response(JSON.stringify(reqOrBody), {
+    status: typeof bodyOrStatus === "number" ? bodyOrStatus : 200,
+    headers: fallback,
+  });
+}
+
+export function handleOptions(req: Request): Response | null {
+  if (req.method === "OPTIONS") {
+    return new Response("ok", { headers: corsHeaders(req) });
+  }
+  return null;
+}

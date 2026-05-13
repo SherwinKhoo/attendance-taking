@@ -1,0 +1,13 @@
+{
+  "name": "attendance-taking",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "seed": "node --env-file=.env scripts/seed-prototype.mjs",
+    "test:smoke": "playwright test tests/playwright.smoke.spec.js"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.59.0",
+    "@supabase/supabase-js": "^2.77.0"
+  }
+}
