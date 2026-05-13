@@ -9,7 +9,7 @@
 // Auth: Supabase Auth via signInWithPassword. The user picks a campus and
 // types a pass-ID + their daily/permanent password; this code synthesises the
 // auth email (${pass_id}@${campus}.local). The synthetic email is never
-// user-visible. The campus picker is required because pass-IDs are unique
+// user-visible. The campus code is required because pass-IDs are unique
 // per campus, not globally.
 //
 // Persistence: localStorage (Supabase JS client default). Logout clears all
@@ -28,10 +28,12 @@ const STORAGE_KEYS = {
 };
 
 const CONFIG = {
+  CAMPUS_REGEX: /^[A-Z0-9]([A-Z0-9-]{0,61}[A-Z0-9])?$/i,
+  CAMPUS_PATTERN: "[A-Za-z0-9]([A-Za-z0-9\\-]{0,61}[A-Za-z0-9])?",
   PASS_ID_REGEX: /^[A-Z0-9][A-Z0-9_-]{2,31}$/i,
-  PASS_ID_PATTERN: "[A-Za-z0-9][A-Za-z0-9_-]{2,31}",
+  PASS_ID_PATTERN: "[A-Za-z0-9][A-Za-z0-9_\\-]{2,31}",
   PASSWORD_REGEX: /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*._-])[A-Za-z0-9!@#$%^&*._-]{10,16}$/,
-  PASSWORD_PATTERN: "(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[!@#$%^&*._-])[A-Za-z0-9!@#$%^&*._-]{10,16}",
+  PASSWORD_PATTERN: "(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[!@#$%^&*._\\-])[A-Za-z0-9!@#$%^&*._\\-]{10,16}",
   PASSWORD_ALLOWED_CHARS_REGEX: /^[A-Za-z0-9!@#$%^&*._-]*$/,
   PASSWORD_ALLOWED_MESSAGE:
     "Use 10-16 characters with upper and lower case letters, numbers, and an approved symbol (!@#$%^&*._-).",
@@ -192,26 +194,29 @@ app.innerHTML = `
     <form id="login-form" class="modal-panel" method="dialog">
       <h2>Pass ID authentication</h2>
       <p id="login-status" class="status-line">Sign in with your pass ID.</p>
-      <label>
-        <span>Campus</span>
-        <select id="login-campus" name="campus" autocomplete="organization" required>
-          <option value="" disabled selected>Loading campuses...</option>
-        </select>
-      </label>
-      <label>
-        <span>Pass ID</span>
-        <input id="pass-id" name="pass-id" autocomplete="username" placeholder="e.g. A-001"
-               pattern="${CONFIG.PASS_ID_PATTERN}" maxlength="32" required />
-      </label>
-      <label>
-        <span>Password</span>
-        <span class="password-field">
+      <fieldset class="form-field modal-field">
+        <legend>Campus</legend>
+        <label class="field-control" aria-label="Campus">
+          <input id="login-campus" name="campus" autocomplete="organization" placeholder="Campus code"
+                 pattern="${CONFIG.CAMPUS_PATTERN}" maxlength="63" required />
+        </label>
+      </fieldset>
+      <fieldset class="form-field modal-field">
+        <legend>Pass ID</legend>
+        <label class="field-control" aria-label="Pass ID">
+          <input id="pass-id" name="pass-id" autocomplete="username" placeholder="e.g. A-001"
+                 pattern="${CONFIG.PASS_ID_PATTERN}" maxlength="32" required />
+        </label>
+      </fieldset>
+      <fieldset class="form-field modal-field">
+        <legend>Password</legend>
+        <label class="field-control password-field" aria-label="Password">
           <input id="password" name="password" type="password" autocomplete="current-password"
                  placeholder="10-16 characters" minlength="10" maxlength="16"
                  pattern="${CONFIG.PASSWORD_PATTERN}" title="${CONFIG.PASSWORD_ALLOWED_MESSAGE}" required />
           <button id="password-visibility-toggle" type="button" aria-controls="password" aria-pressed="false">Show</button>
-        </span>
-      </label>
+        </label>
+      </fieldset>
       <menu>
         <button id="login-submit" type="submit" value="submit">Log in</button>
       </menu>
@@ -222,33 +227,33 @@ app.innerHTML = `
     <form id="password-form" class="modal-panel" method="dialog">
       <h2 id="password-dialog-title">Change password</h2>
       <p id="password-dialog-intro" class="status-line"></p>
-      <label>
-        <span>Current password</span>
-        <span class="password-field">
+      <fieldset class="form-field modal-field">
+        <legend>Current password</legend>
+        <label class="field-control password-field" aria-label="Current password">
           <input id="password-old" type="password" autocomplete="current-password"
                  minlength="10" maxlength="16" pattern="${CONFIG.PASSWORD_PATTERN}"
                  title="${CONFIG.PASSWORD_ALLOWED_MESSAGE}" required />
           <button id="password-old-toggle" type="button" aria-controls="password-old" aria-pressed="false">Show</button>
-        </span>
-      </label>
-      <label>
-        <span>New password</span>
-        <span class="password-field">
+        </label>
+      </fieldset>
+      <fieldset class="form-field modal-field">
+        <legend>New password</legend>
+        <label class="field-control password-field" aria-label="New password">
           <input id="password-new" type="password" autocomplete="new-password"
                  minlength="10" maxlength="16" pattern="${CONFIG.PASSWORD_PATTERN}"
                  title="${CONFIG.PASSWORD_ALLOWED_MESSAGE}" required />
           <button id="password-new-toggle" type="button" aria-controls="password-new" aria-pressed="false">Show</button>
-        </span>
-      </label>
-      <label>
-        <span>Confirm new password</span>
-        <span class="password-field">
+        </label>
+      </fieldset>
+      <fieldset class="form-field modal-field">
+        <legend>Confirm new password</legend>
+        <label class="field-control password-field" aria-label="Confirm new password">
           <input id="password-confirm" type="password" autocomplete="new-password"
                  minlength="10" maxlength="16" pattern="${CONFIG.PASSWORD_PATTERN}"
                  title="${CONFIG.PASSWORD_ALLOWED_MESSAGE}" required />
           <button id="password-confirm-toggle" type="button" aria-controls="password-confirm" aria-pressed="false">Show</button>
-        </span>
-      </label>
+        </label>
+      </fieldset>
       <p class="validation-line" id="password-dialog-validation"></p>
       <menu>
         <button id="password-cancel" type="button" value="cancel">Cancel</button>
@@ -449,37 +454,6 @@ function syntheticEmail(passId, campus) {
   return `${String(passId).trim().toLowerCase()}@${String(campus).trim().toLowerCase()}.local`;
 }
 
-// Populate the sign-in campus dropdown from the anon-readable
-// list_public_campuses RPC. Idempotent: rebuilds the option list each call so
-// freshly-added campuses appear on the next renderLoggedOut().
-async function populateCampusPicker() {
-  if (!state.supabase || !els.loginCampus) return;
-  const select = els.loginCampus;
-  let campuses = [];
-  try {
-    const { data, error } = await withTimeout(
-      state.supabase.rpc("list_public_campuses"),
-      TIMEOUT_RPC_MS,
-      'rpc("list_public_campuses")',
-    );
-    if (error) throw new Error(error.message);
-    campuses = Array.isArray(data) ? data : [];
-  } catch (err) {
-    select.innerHTML = '<option value="" disabled selected>Could not load campuses</option>';
-    els.loginStatus.textContent = `Campus list failed: ${err.message}`;
-    return;
-  }
-  const last = localStorage.getItem(STORAGE_KEYS.lastCampus) ?? "";
-  const options = ['<option value="" disabled' + (last ? "" : " selected") + ">Select campus</option>"];
-  for (const c of campuses) {
-    const code = String(c.code ?? "");
-    const name = String(c.name ?? code);
-    const sel = code === last ? " selected" : "";
-    options.push(`<option value="${code}"${sel}>${name} (${code})</option>`);
-  }
-  select.innerHTML = options.join("");
-}
-
 // Race a promise against a timeout. On timeout, reject with a user-facing
 // message so a wedged Supabase call surfaces as a visible error instead of a
 // silently hung UI. Used by rpc(), auth bootstrap, and admin functions.invoke().
@@ -667,10 +641,8 @@ function renderLoggedOut() {
   els.attendanceLoginStatus.textContent = "Not logged in";
   els.passId.value = "";
   els.password.value = "";
+  els.loginCampus.value = localStorage.getItem(STORAGE_KEYS.lastCampus) ?? "";
   els.loginStatus.textContent = "Sign in with your pass ID.";
-  // Fire-and-forget: the dropdown shows a "Loading..." placeholder until this
-  // resolves. Sign-in is blocked by the `required` attribute on the select.
-  populateCampusPicker();
   els.fullscreenQr.disabled = true;
   els.refreshAttendeeTotal.disabled = true;
   els.exportCsv.disabled = true;
@@ -844,11 +816,15 @@ async function handleAuthSubmit(event) {
     els.loginStatus.textContent = "Supabase configuration is required.";
     return;
   }
-  const campus = els.loginCampus.value.trim();
+  const campus = els.loginCampus.value.trim().toUpperCase();
   const passId = els.passId.value.trim().toUpperCase();
   const password = els.password.value;
   if (!campus) {
-    els.loginStatus.textContent = "Select your campus.";
+    els.loginStatus.textContent = "Enter your campus code.";
+    return;
+  }
+  if (!CONFIG.CAMPUS_REGEX.test(campus)) {
+    els.loginStatus.textContent = "Enter a valid campus code.";
     return;
   }
   if (!CONFIG.PASS_ID_REGEX.test(passId)) {
@@ -980,7 +956,8 @@ async function handlePasswordSubmit() {
   }
 
   const passId = state.profile?.pass_id || els.passId.value.trim().toUpperCase();
-  if (!passId) {
+  const campus = state.profile?.campus;
+  if (!passId || !campus) {
     els.passwordDialogValidation.textContent = "Pass ID unknown — please log in again.";
     return;
   }
@@ -994,7 +971,7 @@ async function handlePasswordSubmit() {
     try {
       ({ error: reauthErr } = await withTimeout(
         state.supabase.auth.signInWithPassword({
-          email: syntheticEmail(passId),
+          email: syntheticEmail(passId, campus),
           password: oldPassword,
         }),
         TIMEOUT_AUTH_MS,

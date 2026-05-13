@@ -538,6 +538,10 @@ dialog .modal-panel input {
   background: var(--panel);
   color: var(--ink);
 }
+dialog .modal-panel .form-field input {
+  border-color: transparent;
+  background: transparent;
+}
 dialog .modal-panel menu {
   display: flex;
   gap: 0.5rem;
@@ -789,6 +793,7 @@ dialog .modal-panel menu {
 }
 
 .checkin-modes {
+  --field-surface: var(--panel);
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 0.4rem 0.6rem 0.5rem;
@@ -798,7 +803,8 @@ dialog .modal-panel menu {
   font-size: 0.92rem;
 }
 .checkin-modes legend {
-  padding: 0 0.3rem;
+  padding: 0 0.35rem;
+  background: var(--field-surface);
   font-size: 0.85rem;
   color: var(--muted);
 }
@@ -808,14 +814,20 @@ dialog .modal-panel menu {
   align-items: center;
 }
 .form-field {
+  --field-surface: var(--panel);
   border: 1px solid var(--line);
   border-radius: 6px;
   padding: 0 10px 8px;
   margin: 0;
   min-width: 0;
 }
+.modal-field {
+  --field-surface: var(--panel);
+  width: 100%;
+}
 .form-field legend {
-  padding: 0 5px;
+  padding: 0 6px;
+  background: var(--field-surface);
   color: var(--muted);
   font-size: 0.78rem;
   font-weight: 700;
@@ -825,6 +837,9 @@ dialog .modal-panel menu {
 .field-control {
   display: block;
   margin-top: 0;
+}
+.modal-field .field-control {
+  min-height: 42px;
 }
 .form-field input,
 .form-field select {

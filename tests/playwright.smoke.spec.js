@@ -19,9 +19,10 @@ test("login dialog blocks until valid credentials, persists across reload, and l
   const loginDialog = page.locator("#login-dialog");
   await expect(loginDialog).toBeVisible();
   await expect(page.locator("#settings-toggle")).toBeHidden();
+  await expect(page.locator("#login-campus")).toHaveJSProperty("tagName", "INPUT");
 
   // Wrong password → dialog stays.
-  await page.selectOption("#login-campus", "PROTO");
+  await page.fill("#login-campus", "PROTO");
   await page.fill("#pass-id", "U-001");
   await page.fill("#password", "Wrong-Pass!1");
   await page.click("#login-submit");
@@ -56,7 +57,7 @@ test("login dialog blocks until valid credentials, persists across reload, and l
 
 test("settings dialog opens with dark-mode switch, change-password, log-out, and notifications inbox", async ({ page }) => {
   await page.goto("http://localhost:8011/", { waitUntil: "domcontentloaded" });
-  await page.selectOption("#login-campus", "PROTO");
+  await page.fill("#login-campus", "PROTO");
   await page.fill("#pass-id", "U-001");
   await page.fill("#password", "Proto-Pass!1");
   await page.click("#login-submit");
@@ -71,7 +72,7 @@ test("settings dialog opens with dark-mode switch, change-password, log-out, and
 
 test("session card hides for the user role", async ({ page }) => {
   await page.goto("http://localhost:8011/", { waitUntil: "domcontentloaded" });
-  await page.selectOption("#login-campus", "PROTO");
+  await page.fill("#login-campus", "PROTO");
   await page.fill("#pass-id", "U-001");
   await page.fill("#password", "Proto-Pass!1");
   await page.click("#login-submit");
