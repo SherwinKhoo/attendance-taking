@@ -58,8 +58,8 @@ interface RowResult {
   message?: string;
 }
 
-function syntheticEmail(passId: string): string {
-  return `${passId.toLowerCase()}@passid.local`;
+function syntheticEmail(passId: string, campus: string): string {
+  return `${passId.toLowerCase()}@${campus.toLowerCase()}.local`;
 }
 
 function normalisePassId(raw: unknown): string {
@@ -214,7 +214,7 @@ Deno.serve(async (req: Request) => {
     }
 
     // Create the auth.users row.
-    const email = syntheticEmail(row.pass_id);
+    const email = syntheticEmail(row.pass_id, targetCampus);
     const { data: created, error: createErr } = await service.auth.admin
       .createUser({
         email,

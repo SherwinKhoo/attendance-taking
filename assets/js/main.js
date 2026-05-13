@@ -6,9 +6,11 @@
 // User-facing app. Admin-only screens live in admin.js (loaded in the same
 // bundle and gated by profile.role === 'admin').
 //
-// Auth: Supabase Auth via signInWithPassword. The user types a pass-ID + their
-// daily/permanent password; this code synthesises the auth email server-side
-// (${pass_id}@passid.local). The synthetic email is never user-visible.
+// Auth: Supabase Auth via signInWithPassword. The user picks a campus and
+// types a pass-ID + their daily/permanent password; this code synthesises the
+// auth email (${pass_id}@${campus}.local). The synthetic email is never
+// user-visible. The campus picker is required because pass-IDs are unique
+// per campus, not globally.
 //
 // Persistence: localStorage (Supabase JS client default). Logout clears all
 // app-local keys. sessionStorage variant is a single-line config flip if ever
@@ -22,6 +24,7 @@ const STORAGE_KEYS = {
   deviceInstallId: "attendance.deviceInstallId",
   latestCreatorSession: "attendance.latestCreatorSession",
   darkMode: "attendance.darkMode",
+  lastCampus: "attendance.lastCampus",
 };
 
 const CONFIG = {
@@ -190,6 +193,12 @@ app.innerHTML = `
       <h2>Pass ID authentication</h2>
       <p id="login-status" class="status-line">Sign in with your pass ID.</p>
       <label>
+        <span>Campus</span>
+        <select id="login-campus" name="campus" autocomplete="organization" required>
+          <option value="" disabled selected>Loading campuses...</option>
+        </select>
+      </label>
+      <label>
         <span>Pass ID</span>
         <input id="pass-id" name="pass-id" autocomplete="username" placeholder="e.g. A-001"
                pattern="${CONFIG.PASS_ID_PATTERN}" maxlength="32" required />
@@ -315,6 +324,7 @@ const els = {
   exportCsv: document.getElementById("export-csv"),
   loginDialog: document.getElementById("login-dialog"),
   loginForm: document.getElementById("login-form"),
+  loginCampus: document.getElementById("login-campus"),
   passId: document.getElementById("pass-id"),
   password: document.getElementById("password"),
   passwordVisibilityToggle: document.getElementById("password-visibility-toggle"),
@@ -435,8 +445,39 @@ function createSupabaseClient() {
   });
 }
 
-function syntheticEmail(passId) {
-  return `${String(passId).trim().toLowerCase()}@passid.local`;
+function syntheticEmail(passId, campus) {
+  return `${String(passId).trim().toLowerCase()}@${String(campus).trim().toLowerCase()}.local`;
+}
+
+// Populate the sign-in campus dropdown from the anon-readable
+// list_public_campuses RPC. Idempotent: rebuilds the option list each call so
+// freshly-added campuses appear on the next renderLoggedOut().
+async function populateCampusPicker() {
+  if (!state.supabase || !els.loginCampus) return;
+  const select = els.loginCampus;
+  let campuses = [];
+  try {
+    const { data, error } = await withTimeout(
+      state.supabase.rpc("list_public_campuses"),
+      TIMEOUT_RPC_MS,
+      'rpc("list_public_campuses")',
+    );
+    if (error) throw new Error(error.message);
+    campuses = Array.isArray(data) ? data : [];
+  } catch (err) {
+    select.innerHTML = '<option value="" disabled selected>Could not load campuses</option>';
+    els.loginStatus.textContent = `Campus list failed: ${err.message}`;
+    return;
+  }
+  const last = localStorage.getItem(STORAGE_KEYS.lastCampus) ?? "";
+  const options = ['<option value="" disabled' + (last ? "" : " selected") + ">Select campus</option>"];
+  for (const c of campuses) {
+    const code = String(c.code ?? "");
+    const name = String(c.name ?? code);
+    const sel = code === last ? " selected" : "";
+    options.push(`<option value="${code}"${sel}>${name} (${code})</option>`);
+  }
+  select.innerHTML = options.join("");
 }
 
 // Race a promise against a timeout. On timeout, reject with a user-facing
@@ -627,6 +668,9 @@ function renderLoggedOut() {
   els.passId.value = "";
   els.password.value = "";
   els.loginStatus.textContent = "Sign in with your pass ID.";
+  // Fire-and-forget: the dropdown shows a "Loading..." placeholder until this
+  // resolves. Sign-in is blocked by the `required` attribute on the select.
+  populateCampusPicker();
   els.fullscreenQr.disabled = true;
   els.refreshAttendeeTotal.disabled = true;
   els.exportCsv.disabled = true;
@@ -800,8 +844,13 @@ async function handleAuthSubmit(event) {
     els.loginStatus.textContent = "Supabase configuration is required.";
     return;
   }
+  const campus = els.loginCampus.value.trim();
   const passId = els.passId.value.trim().toUpperCase();
   const password = els.password.value;
+  if (!campus) {
+    els.loginStatus.textContent = "Select your campus.";
+    return;
+  }
   if (!CONFIG.PASS_ID_REGEX.test(passId)) {
     els.loginStatus.textContent = "Enter a valid pass ID.";
     return;
@@ -810,6 +859,7 @@ async function handleAuthSubmit(event) {
     els.loginStatus.textContent = "Enter your password.";
     return;
   }
+  localStorage.setItem(STORAGE_KEYS.lastCampus, campus);
   els.loginStatus.textContent = "Signing in...";
   // Set BEFORE awaiting signInWithPassword: Supabase fires its SIGNED_IN
   // callback synchronously from inside signInWithPassword, so the
@@ -823,7 +873,7 @@ async function handleAuthSubmit(event) {
   try {
     ({ error } = await withTimeout(
       state.supabase.auth.signInWithPassword({
-        email: syntheticEmail(passId),
+        email: syntheticEmail(passId, campus),
         password,
       }),
       TIMEOUT_AUTH_MS,

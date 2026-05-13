@@ -104,7 +104,7 @@ async function findExistingByEmail(email) {
 }
 
 async function ensureUser(seed, { tempPassword }) {
-  const email = `${seed.pass_id.toLowerCase()}@passid.local`;
+  const email = `${seed.pass_id.toLowerCase()}@${CAMPUS.code.toLowerCase()}.local`;
   const password = seed.role === "admin" ? ADMIN_PASSWORD : tempPassword;
   let user = await findExistingByEmail(email);
 
@@ -132,7 +132,10 @@ async function ensureUser(seed, { tempPassword }) {
     group_name: "Prototype 2026",
     sub_group: seed.sub_group,
     display_name: seed.display_name,
-    admin_campus_scope: null, // global admin for A-001
+    // PROTO is a sandbox; its admin is local to PROTO, not global. The
+    // dedicated global admin lives in the ADMIN campus (see
+    // scripts/seed-global-admin.mjs).
+    admin_campus_scope: seed.role === "admin" ? CAMPUS.code : null,
     password_set_at: null,    // unclaimed: forced change on first sign-in
   };
 

@@ -66,7 +66,13 @@ create table public.campuses (
   center_lat double precision,
   center_lon double precision,
   radius_metres integer check (radius_metres is null or radius_metres > 0),
-  created_at timestamptz not null default now()
+  created_at timestamptz not null default now(),
+  -- Campus codes are embedded into synthetic auth emails as the domain
+  -- (`{pass_id}@{campus}.local`), so they must be RFC 1035 host-label safe:
+  -- ASCII alphanumerics + hyphen, no underscores, no leading/trailing hyphen,
+  -- <=63 chars.
+  constraint campuses_code_hostname_safe
+    check (code ~ '^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?$')
 );
 
 create table public.profiles (
@@ -90,9 +96,11 @@ create table public.profiles (
   created_at timestamptz not null default now()
 );
 
--- Active pass_ids must be unique; archived rows are excluded so a string can recur.
-create unique index profiles_pass_id_active_unique
-  on public.profiles(pass_id)
+-- Active pass_ids must be unique per campus; the same string may exist in
+-- different campuses simultaneously. Archived rows are excluded so a string
+-- can recur within a campus after revoke.
+create unique index profiles_campus_pass_id_active_unique
+  on public.profiles(campus, pass_id)
   where archived_at is null and pass_id is not null;
 
 create index profiles_campus_idx on public.profiles(campus) where archived_at is null;
@@ -974,6 +982,23 @@ begin
 end;
 $$;
 
+-- Anon-readable list of campuses for the sign-in screen's campus picker.
+-- Returns only (code, name) so anonymous callers cannot enumerate geofence
+-- coordinates or rotation timezones. RLS on public.campuses restricts SELECT
+-- to authenticated users; this SECURITY DEFINER RPC carves out the minimal
+-- public projection needed before sign-in.
+create or replace function public.list_public_campuses()
+returns jsonb
+language sql security definer
+set search_path = public, pg_temp
+as $$
+  select coalesce(jsonb_agg(
+    jsonb_build_object('code', code, 'name', name)
+    order by code
+  ), '[]'::jsonb)
+  from public.campuses;
+$$;
+
 -- Lists campuses where the current local time is the rotation hour. Used by
 -- the cron-triggered Edge Function to decide which campuses to rotate this run.
 create or replace function public.campuses_due_for_rotation()
@@ -1245,10 +1270,18 @@ end;
 $$;
 
 -- Cleanup helper. Deletes auth.users rows with a synthetic attendance email
--- (...@passid.local) that no longer have a matching public.profiles row.
--- Called from the revoke Edge Function on every batch so future provisioning
--- of the same pass-ID never gets blocked by an orphan, and also re-runnable
--- manually as `select public.cleanup_orphaned_synthetic_auth_users();`.
+-- that no longer have a matching public.profiles row. Called from the revoke
+-- Edge Function on every batch so future provisioning of the same pass-ID
+-- never gets blocked by an orphan, and also re-runnable manually as
+-- `select public.cleanup_orphaned_synthetic_auth_users();`.
+--
+-- Two email shapes are recognised:
+--   * Legacy `{pass_id}@passid.local` (pre per-campus-uniqueness migration).
+--   * Current `{pass_id}@{campus}.local` where {campus} matches a row in
+--     public.campuses (lower-cased). The legacy clause is kept so any orphans
+--     created mid-cutover are still swept; it can be removed in a follow-up
+--     once `select 1 from auth.users where email like '%@passid.local'` is
+--     empty for an extended period.
 create or replace function public.cleanup_orphaned_synthetic_auth_users()
 returns integer
 language plpgsql
@@ -1260,7 +1293,12 @@ declare
 begin
   with d as (
     delete from auth.users u
-    where u.email like '%@passid.local'
+    where (
+        u.email like '%@passid.local'
+        or split_part(u.email, '@', 2) in (
+          select lower(code) || '.local' from public.campuses
+        )
+      )
       and not exists (
         -- Treat archived profiles as "doesn't count": if the only profile
         -- match is archived, the auth user is still an orphan from the
@@ -1396,6 +1434,9 @@ grant execute on function public.get_current_login_profile(uuid) to service_role
 
 revoke all on function public.cleanup_orphaned_synthetic_auth_users() from public, anon, authenticated;
 grant execute on function public.cleanup_orphaned_synthetic_auth_users() to service_role;
+
+-- Sign-in screen reads this before the user has a session.
+grant execute on function public.list_public_campuses() to anon, authenticated;
 
 revoke all on function public.revoke_user_refresh_tokens(uuid) from public, anon, authenticated;
 grant execute on function public.revoke_user_refresh_tokens(uuid) to service_role;
