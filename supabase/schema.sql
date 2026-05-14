@@ -34,6 +34,7 @@ drop function if exists public.logout_session(text, uuid, uuid);
 drop function if exists public.get_current_login_profile(text, uuid, uuid);
 drop function if exists public.create_attendance_session(text, text, timestamptz, integer, double precision, double precision, text, uuid, uuid);
 drop function if exists public.create_attendance_session(text, text, timestamptz, integer, double precision, double precision, uuid);
+drop function if exists public.create_attendance_session(text, text, timestamptz, integer, double precision, double precision, uuid, boolean, boolean);
 drop function if exists public.get_latest_active_session_qr_for_creator(text, uuid, uuid);
 drop function if exists public.submit_attendance(jsonb, text, uuid, uuid, double precision, double precision);
 drop function if exists public.list_open_geofence_sessions();
@@ -139,18 +140,40 @@ create table public.attendance_sessions (
   -- creator's campus to have a configured geofence.
   allow_qr boolean not null default true,
   allow_geofence boolean not null default false,
+  -- Visibility scope. The lowest grouping specified at creation time controls
+  -- who sees the session in lists like list_open_geofence_sessions. NULL at any
+  -- level means "all" for that level. The prefix CHECK enforces a valid
+  -- hierarchy: sub_group implies group_name implies campus. scope_campus may
+  -- only be NULL for global-admin-created cross-campus sessions and is then
+  -- incompatible with allow_geofence (no single geofence to apply).
+  scope_campus text references public.campuses(code) on update cascade,
+  scope_group_name text,
+  scope_sub_group text,
   created_at timestamptz not null default now(),
-  constraint attendance_sessions_at_least_one_mode check (allow_qr or allow_geofence)
+  constraint attendance_sessions_at_least_one_mode check (allow_qr or allow_geofence),
+  constraint attendance_sessions_scope_prefix check (
+    (scope_sub_group is null or scope_group_name is not null)
+    and (scope_group_name is null or scope_campus is not null)
+  ),
+  constraint attendance_sessions_geofence_requires_campus check (
+    not allow_geofence or scope_campus is not null
+  )
 );
 
 create unique index attendance_sessions_code_unique_idx
   on public.attendance_sessions(code);
 create index attendance_sessions_creator_active_idx
   on public.attendance_sessions(creator_profile_id, active, created_at desc);
+create index attendance_sessions_scope_idx
+  on public.attendance_sessions(active, scope_campus, scope_group_name, scope_sub_group);
 
 create table public.attendance_attempts (
   id uuid primary key default gen_random_uuid(),
-  session_id uuid not null references public.attendance_sessions(id),
+  -- ON DELETE CASCADE: an attendance attempt is meaningless without its
+  -- parent session, and the row already snapshots session_code / session_name /
+  -- submitter_pass_id / submitter_campus / scanned_session_payload for forensic
+  -- lookups via audit_events (whose session_id has no FK and survives).
+  session_id uuid not null references public.attendance_sessions(id) on delete cascade,
   session_code text not null,
   session_name text not null,
   scanned_session_payload jsonb not null,
@@ -433,7 +456,10 @@ create or replace function public.create_attendance_session(
   p_creator_lon double precision,
   p_device_install_id uuid,
   p_allow_qr boolean default true,
-  p_allow_geofence boolean default false
+  p_allow_geofence boolean default false,
+  p_scope_campus text default null,
+  p_scope_group_name text default null,
+  p_scope_sub_group text default null
 )
 returns jsonb
 language plpgsql security definer
@@ -443,6 +469,10 @@ declare
   v_caller public.profiles;
   v_session public.attendance_sessions;
   v_campus public.campuses;
+  v_is_global_admin boolean;
+  v_scope_campus text;
+  v_scope_group text;
+  v_scope_sub text;
 begin
   v_caller := public.assert_authenticated();
 
@@ -462,25 +492,84 @@ begin
     raise exception 'At least one check-in mode (QR scan or campus grounds) must be enabled.';
   end if;
 
+  v_is_global_admin := (v_caller.role = 'admin' and v_caller.admin_campus_scope is null);
+
+  -- Normalise empty strings to NULL so the client can send blanks freely.
+  v_scope_campus := nullif(trim(coalesce(p_scope_campus, '')), '');
+  v_scope_group := nullif(trim(coalesce(p_scope_group_name, '')), '');
+  v_scope_sub := nullif(trim(coalesce(p_scope_sub_group, '')), '');
+
+  -- Default: scope to the creator's own (campus, group, sub_group) tuple, which
+  -- preserves the pre-scope-columns behaviour for callers that don't pass any.
+  if v_scope_campus is null and v_scope_group is null and v_scope_sub is null then
+    v_scope_campus := v_caller.campus;
+    v_scope_group := v_caller.group_name;
+    v_scope_sub := v_caller.sub_group;
+  end if;
+
+  -- Prefix rule: sub_group implies group_name implies campus.
+  if v_scope_sub is not null and v_scope_group is null then
+    raise exception 'Sub-group scope requires a group scope.';
+  end if;
+  if v_scope_group is not null and v_scope_campus is null then
+    raise exception 'Group scope requires a campus scope.';
+  end if;
+
+  -- Safeguards: only the global admin (role=admin, admin_campus_scope IS NULL)
+  -- may set scope_campus to NULL (cross-campus) or to a campus other than their
+  -- own. Representatives, coordinators, and per-campus admins are pinned to
+  -- their own campus. Representatives and coordinators are additionally pinned
+  -- to their own group_name and sub_group when those scope levels are set.
+  if not v_is_global_admin then
+    if v_scope_campus is null then
+      raise exception 'Only global admins may create cross-campus sessions.';
+    end if;
+    if v_caller.role = 'admin' then
+      -- Per-campus admin: campus must match admin_campus_scope.
+      if v_scope_campus <> v_caller.admin_campus_scope then
+        raise exception 'Admin scope does not include campus %.', v_scope_campus;
+      end if;
+    else
+      -- Representative / coordinator: pinned to their full tuple.
+      if v_scope_campus <> v_caller.campus then
+        raise exception 'You can only create sessions within your own campus.';
+      end if;
+      if v_scope_group is not null and v_scope_group <> v_caller.group_name then
+        raise exception 'You can only create sessions within your own group.';
+      end if;
+      if v_scope_sub is not null and v_scope_sub <> v_caller.sub_group then
+        raise exception 'You can only create sessions within your own sub-group.';
+      end if;
+    end if;
+  end if;
+
+  -- Geofence mode requires the scope campus to have a configured geofence;
+  -- cross-campus (scope_campus IS NULL) is incompatible with geofence mode
+  -- because there is no single geofence to apply.
   if p_allow_geofence then
-    select * into v_campus from public.campuses where code = v_caller.campus;
+    if v_scope_campus is null then
+      raise exception 'Cross-campus sessions cannot use campus-grounds mode.';
+    end if;
+    select * into v_campus from public.campuses where code = v_scope_campus;
     if v_campus.center_lat is null
        or v_campus.center_lon is null
        or v_campus.radius_metres is null then
       raise exception 'Campus % has no geofence configured; campus-grounds mode unavailable.',
-        v_caller.campus;
+        v_scope_campus;
     end if;
   end if;
 
   insert into public.attendance_sessions(
     code, name, intended_start_at, grace_period_minutes,
     creator_lat, creator_lon, creator_profile_id, creator_pass_id, creator_campus,
-    creator_device_install_id, allow_qr, allow_geofence
+    creator_device_install_id, allow_qr, allow_geofence,
+    scope_campus, scope_group_name, scope_sub_group
   )
   values (
     upper(trim(p_code)), trim(p_name), p_intended_start_at, p_grace_period_minutes,
     p_creator_lat, p_creator_lon, v_caller.profile_id, v_caller.pass_id, v_caller.campus,
-    p_device_install_id, p_allow_qr, p_allow_geofence
+    p_device_install_id, p_allow_qr, p_allow_geofence,
+    v_scope_campus, v_scope_group, v_scope_sub
   )
   returning * into v_session;
 
@@ -499,6 +588,9 @@ begin
     'creator_profile_id', v_session.creator_profile_id,
     'allow_qr', v_session.allow_qr,
     'allow_geofence', v_session.allow_geofence,
+    'scope_campus', v_session.scope_campus,
+    'scope_group_name', v_session.scope_group_name,
+    'scope_sub_group', v_session.scope_sub_group,
     'created_at', v_session.created_at
   );
 end;
@@ -663,17 +755,15 @@ begin
       'session_name', s.name,
       'intended_start_at', s.intended_start_at,
       'grace_period_minutes', s.grace_period_minutes,
-      'creator_pass_id', cp.pass_id,
+      'creator_pass_id', s.creator_pass_id,
       'created_at', s.created_at
     ) order by s.created_at desc)
     from public.attendance_sessions s
-    join public.profiles cp on cp.profile_id = s.creator_profile_id
     where s.active
       and s.allow_geofence
-      and cp.archived_at is null
-      and cp.campus = v_caller.campus
-      and cp.group_name = v_caller.group_name
-      and cp.sub_group = v_caller.sub_group
+      and (s.scope_campus is null or s.scope_campus = v_caller.campus)
+      and (s.scope_group_name is null or s.scope_group_name = v_caller.group_name)
+      and (s.scope_sub_group is null or s.scope_sub_group = v_caller.sub_group)
   ), '[]'::jsonb);
 end;
 $$;
@@ -694,7 +784,6 @@ as $$
 declare
   v_caller public.profiles;
   v_session public.attendance_sessions;
-  v_creator public.profiles;
   v_campus public.campuses;
   v_distance double precision;
   v_flags text[] := '{}';
@@ -719,22 +808,26 @@ begin
     raise exception 'This session does not allow campus-grounds check-in.';
   end if;
 
-  select * into v_creator
-  from public.profiles
-  where profile_id = v_session.creator_profile_id;
-  if v_creator.profile_id is null
-     or v_creator.archived_at is not null
-     or v_creator.campus is distinct from v_caller.campus
-     or v_creator.group_name is distinct from v_caller.group_name
-     or v_creator.sub_group is distinct from v_caller.sub_group then
+  -- Scope gate: caller must fall within the session's configured scope. The
+  -- attendance_sessions_geofence_requires_campus CHECK guarantees scope_campus
+  -- is non-null on geofence sessions, so the campus comparison always runs.
+  if v_session.scope_campus is distinct from v_caller.campus then
+    raise exception 'You are not in the target campus for this session.';
+  end if;
+  if v_session.scope_group_name is not null
+     and v_session.scope_group_name <> v_caller.group_name then
     raise exception 'You are not in the target group for this session.';
   end if;
+  if v_session.scope_sub_group is not null
+     and v_session.scope_sub_group <> v_caller.sub_group then
+    raise exception 'You are not in the target sub-group for this session.';
+  end if;
 
-  select * into v_campus from public.campuses where code = v_caller.campus;
+  select * into v_campus from public.campuses where code = v_session.scope_campus;
   if v_campus.center_lat is null
      or v_campus.center_lon is null
      or v_campus.radius_metres is null then
-    raise exception 'Campus % has no geofence configured.', v_caller.campus;
+    raise exception 'Campus % has no geofence configured.', v_session.scope_campus;
   end if;
 
   v_distance := public.distance_metres(
@@ -868,7 +961,7 @@ begin
   insert into public.audit_events(event_type, actor_profile_id, actor_campus, session_id)
   values ('export_canonical_attendance_csv', v_caller.profile_id, v_caller.campus, p_session_id);
 
-  select string_agg(line, E'\n')
+  select string_agg(line, E'\n' order by sort_order)
   into v_csv
   from (
     select 0 as sort_order,
@@ -896,8 +989,7 @@ begin
     left join public.profiles p on p.profile_id = a.profile_id
     where a.session_id = p_session_id
       and a.canonical
-  ) rows
-  order by sort_order;
+  ) rows;
 
   return coalesce(v_csv,
     'session code,session name,pass ID,canonical submitted timestamp,attempt count,flag count,flags,device install ID,submitter coordinates,late flag status,distance from session QR location');
@@ -1598,7 +1690,7 @@ revoke all on function public.campuses_due_for_rotation() from public, anon, aut
 revoke all on function public.get_current_login_profile(uuid) from public, anon, authenticated;
 revoke all on function public.mark_password_set() from public, anon, authenticated;
 revoke all on function public.validate_password(text) from public, anon, authenticated;
-revoke all on function public.create_attendance_session(text, text, timestamptz, integer, double precision, double precision, uuid, boolean, boolean) from public, anon, authenticated;
+revoke all on function public.create_attendance_session(text, text, timestamptz, integer, double precision, double precision, uuid, boolean, boolean, text, text, text) from public, anon, authenticated;
 revoke all on function public.list_open_geofence_sessions() from public, anon, authenticated;
 revoke all on function public.submit_geofence_attendance(uuid, uuid, double precision, double precision) from public, anon, authenticated;
 revoke all on function public.get_latest_active_session_qr_for_creator(uuid) from public, anon, authenticated;
@@ -1618,7 +1710,7 @@ revoke all on function public.admin_set_geofence(text, double precision, double 
 grant execute on function public.get_current_login_profile(uuid) to authenticated;
 grant execute on function public.mark_password_set() to authenticated;
 grant execute on function public.validate_password(text) to authenticated;
-grant execute on function public.create_attendance_session(text, text, timestamptz, integer, double precision, double precision, uuid, boolean, boolean) to authenticated;
+grant execute on function public.create_attendance_session(text, text, timestamptz, integer, double precision, double precision, uuid, boolean, boolean, text, text, text) to authenticated;
 grant execute on function public.list_open_geofence_sessions() to authenticated;
 grant execute on function public.submit_geofence_attendance(uuid, uuid, double precision, double precision) to authenticated;
 grant execute on function public.get_latest_active_session_qr_for_creator(uuid) to authenticated;
@@ -1682,6 +1774,51 @@ begin
     alter publication supabase_realtime add table public.profiles;
   end if;
 end $$;
+
+-- -----------------------------------------------------------------------------
+-- Realtime broadcast for live session-list updates.
+--
+-- attendance_sessions has RLS deny-all (reads go through SECURITY DEFINER RPCs
+-- like list_open_geofence_sessions), so postgres_changes streaming would never
+-- deliver events. Instead, fire a per-row broadcast on the `sessions:open`
+-- topic whenever a session row changes; the client refetches via the RPC,
+-- which still enforces scope filtering. The payload carries only scope hints
+-- (no session content), so making the topic public via private=false is safe.
+-- -----------------------------------------------------------------------------
+
+create or replace function public.attendance_sessions_broadcast()
+returns trigger
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+begin
+  -- Wrap in EXCEPTION so a Realtime outage or a project without the realtime
+  -- schema cannot block session writes. Live updates degrade to manual refresh.
+  begin
+    perform realtime.send(
+      jsonb_build_object(
+        'op', tg_op,
+        'scope_campus', coalesce(new.scope_campus, old.scope_campus),
+        'scope_group_name', coalesce(new.scope_group_name, old.scope_group_name),
+        'scope_sub_group', coalesce(new.scope_sub_group, old.scope_sub_group)
+      ),
+      'sessions_changed',
+      'sessions:open',
+      false
+    );
+  exception when others then
+    -- swallow: do not let realtime issues fail the row write
+    null;
+  end;
+  return null;
+end;
+$$;
+
+drop trigger if exists attendance_sessions_broadcast_trg on public.attendance_sessions;
+create trigger attendance_sessions_broadcast_trg
+  after insert or update or delete on public.attendance_sessions
+  for each row execute function public.attendance_sessions_broadcast();
 
 -- -----------------------------------------------------------------------------
 -- Final sweep: drop orphan synthetic-email auth.users left over from earlier

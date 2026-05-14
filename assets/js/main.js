@@ -75,6 +75,7 @@ const state = {
   attendanceCamera: createCameraState(),
   notifications: [],
   notificationsChannel: null,
+  sessionsChannel: null,
 };
 
 // -----------------------------------------------------------------------------
@@ -151,6 +152,24 @@ app.innerHTML = `
         <legend>Timeout</legend>
         <label class="field-control" aria-label="Timeout">
           <input id="grace-period" name="grace-period" type="number" min="0" step="1" value="0" required />
+        </label>
+      </fieldset>
+      <fieldset class="form-field">
+        <legend>Scope — Campus</legend>
+        <label class="field-control" aria-label="Scope campus">
+          <input id="session-scope-campus" name="session-scope-campus" type="text" autocomplete="off" maxlength="63" placeholder="Campus code" />
+        </label>
+      </fieldset>
+      <fieldset class="form-field">
+        <legend>Scope — Group (optional)</legend>
+        <label class="field-control" aria-label="Scope group">
+          <input id="session-scope-group" name="session-scope-group" type="text" autocomplete="off" maxlength="120" placeholder="Leave blank for campus-wide" />
+        </label>
+      </fieldset>
+      <fieldset class="form-field">
+        <legend>Scope — Sub-group (optional)</legend>
+        <label class="field-control" aria-label="Scope sub-group">
+          <input id="session-scope-subgroup" name="session-scope-subgroup" type="text" autocomplete="off" maxlength="120" placeholder="Leave blank for group-wide" disabled />
         </label>
       </fieldset>
       <fieldset class="form-field is-hidden-format">
@@ -318,6 +337,9 @@ const els = {
   sessionDate: document.getElementById("session-date"),
   sessionTime: document.getElementById("session-time"),
   gracePeriod: document.getElementById("grace-period"),
+  sessionScopeCampus: document.getElementById("session-scope-campus"),
+  sessionScopeGroup: document.getElementById("session-scope-group"),
+  sessionScopeSubgroup: document.getElementById("session-scope-subgroup"),
   barcodeFormat: document.getElementById("barcode-format"),
   restoreSession: document.getElementById("restore-session"),
   sessionQr: document.getElementById("session-qr"),
@@ -598,6 +620,7 @@ async function onAuthenticated() {
     forcedPasswordChange = false;
     renderLoggedIn(profile);
     subscribeNotifications(profile);
+    subscribeSessionsBroadcast();
     if (profile.role === "admin" && window.AttendanceAdmin?.mount) {
       window.AttendanceAdmin.mount({
         supabase: state.supabase,
@@ -637,6 +660,10 @@ function renderLoggedOut() {
     state.supabase.removeChannel(state.notificationsChannel);
     state.notificationsChannel = null;
   }
+  if (state.sessionsChannel) {
+    state.supabase.removeChannel(state.sessionsChannel);
+    state.sessionsChannel = null;
+  }
   els.settingsToggle.hidden = true;
   els.attendanceLoginStatus.textContent = "Not logged in";
   els.passId.value = "";
@@ -672,6 +699,47 @@ function renderLoggedIn(profile) {
   // creators as a backstop.
   els.sessionZone.hidden = profile.role === "user";
   els.attendanceLoginStatus.textContent = profile.pass_id ?? profile.profile_id;
+  applySessionScopeDefaults(profile);
+}
+
+// Pre-fill and gate the scope fields based on the caller's role. Global admins
+// (role=admin AND admin_campus_scope IS NULL) get fully editable fields (campus
+// may be cleared for cross-campus sessions). Everyone else is pinned to their
+// own campus; representatives and coordinators are additionally pinned to their
+// own group and sub-group. The server enforces all of this — these client
+// settings are UX scaffolding so the operator can't accidentally enter values
+// the server will reject.
+function applySessionScopeDefaults(profile) {
+  if (!els.sessionScopeCampus) return;
+  const isGlobalAdmin = profile.role === "admin" && profile.admin_campus_scope == null;
+  const isCampusAdmin = profile.role === "admin" && profile.admin_campus_scope != null;
+  const pinnedCampus = isCampusAdmin ? profile.admin_campus_scope : profile.campus;
+  els.sessionScopeCampus.value = pinnedCampus ?? "";
+  els.sessionScopeCampus.readOnly = !isGlobalAdmin;
+  if (isGlobalAdmin || profile.role === "admin") {
+    // Admins (global or per-campus) may scope anywhere in their campus.
+    els.sessionScopeGroup.value = "";
+    els.sessionScopeGroup.readOnly = false;
+    els.sessionScopeSubgroup.value = "";
+    els.sessionScopeSubgroup.readOnly = false;
+  } else {
+    // Representatives and coordinators are pinned to their own group/sub_group.
+    els.sessionScopeGroup.value = profile.group_name ?? "";
+    els.sessionScopeGroup.readOnly = true;
+    els.sessionScopeSubgroup.value = profile.sub_group ?? "";
+    els.sessionScopeSubgroup.readOnly = true;
+  }
+  syncSessionScopeSubgroupEnabled();
+}
+
+function syncSessionScopeSubgroupEnabled() {
+  if (!els.sessionScopeGroup || !els.sessionScopeSubgroup) return;
+  const hasGroup = els.sessionScopeGroup.value.trim() !== "";
+  // Keep readonly pinning intact for non-admins — only toggle the enabled state
+  // when the field is editable (admins clearing the group blanks the sub-group).
+  if (els.sessionScopeSubgroup.readOnly) return;
+  els.sessionScopeSubgroup.disabled = !hasGroup;
+  if (!hasGroup) els.sessionScopeSubgroup.value = "";
 }
 
 function closeIfOpen(dialogEl) {
@@ -719,6 +787,7 @@ function attachEventListeners() {
   );
   els.attendanceScan.addEventListener("click", handleAttendanceScan);
   els.sessionForm.addEventListener("submit", handleSessionCreate);
+  els.sessionScopeGroup.addEventListener("input", syncSessionScopeSubgroupEnabled);
   bindCooldown(els.restoreSession, restoreLatestSession);
   els.fullscreenQr.addEventListener("click", openFullscreenQr);
   bindCooldown(els.refreshAttendeeTotal, refreshAttendeeTotal);
@@ -1114,6 +1183,25 @@ async function subscribeNotifications(profile) {
     .subscribe();
 }
 
+// Live updates for the open-sessions list. A Postgres trigger on
+// attendance_sessions fires realtime.send on the `sessions:open` topic for any
+// INSERT/UPDATE/DELETE. We subscribe here and refetch via the scope-aware RPC
+// when the geofence panel is visible. Channels are multiplexed over the same
+// websocket as notificationsChannel, so this does not add a concurrent
+// connection on the Supabase free tier.
+function subscribeSessionsBroadcast() {
+  if (state.sessionsChannel) {
+    state.supabase.removeChannel(state.sessionsChannel);
+    state.sessionsChannel = null;
+  }
+  state.sessionsChannel = state.supabase
+    .channel("sessions:open")
+    .on("broadcast", { event: "sessions_changed" }, () => {
+      if (!els.geofenceZone?.hidden) refreshOpenSessions();
+    })
+    .subscribe();
+}
+
 async function handleProfileDelete() {
   showToast("This account has been revoked. Signing you out.");
   await handleLogout();
@@ -1304,6 +1392,22 @@ async function handleSessionCreate(event) {
     return;
   }
 
+  const scopeCampus = els.sessionScopeCampus.value.trim() || null;
+  const scopeGroup = els.sessionScopeGroup.value.trim() || null;
+  const scopeSubgroup = els.sessionScopeSubgroup.value.trim() || null;
+  if (scopeSubgroup && !scopeGroup) {
+    els.sessionStatus.textContent = "Sub-group scope requires a group scope.";
+    return;
+  }
+  if (scopeGroup && !scopeCampus) {
+    els.sessionStatus.textContent = "Group scope requires a campus scope.";
+    return;
+  }
+  if (allowGeofence && !scopeCampus) {
+    els.sessionStatus.textContent = "Campus-grounds mode requires a campus scope.";
+    return;
+  }
+
   const submitBtn = event.submitter ?? document.getElementById("generate-session");
   submitBtn.disabled = true;
   try {
@@ -1320,6 +1424,9 @@ async function handleSessionCreate(event) {
       p_device_install_id: state.deviceInstallId,
       p_allow_qr: allowQr,
       p_allow_geofence: allowGeofence,
+      p_scope_campus: scopeCampus,
+      p_scope_group_name: scopeGroup,
+      p_scope_sub_group: scopeSubgroup,
     });
 
     state.latestSession = payload;
