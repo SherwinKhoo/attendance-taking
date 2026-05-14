@@ -1249,6 +1249,194 @@ begin
 end;
 $$;
 
+-- ---------------------------------------------------------------------------
+-- Admin: campus management
+-- ---------------------------------------------------------------------------
+-- Create, rename, delete campuses, and edit per-campus geofences. Create /
+-- rename / delete are global-admin-only (admin_campus_scope IS NULL). Geofence
+-- edit is allowed for the campus's own per-campus admin and for any global
+-- admin, via the existing assert_admin_scope guard.
+
+create or replace function public.admin_create_campus(
+  p_code text,
+  p_name text,
+  p_timezone text
+)
+returns jsonb
+language plpgsql security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_admin public.profiles;
+  v_row public.campuses;
+begin
+  v_admin := public.assert_admin_scope();
+  if v_admin.admin_campus_scope is not null then
+    raise exception 'Only global admins may create campuses.';
+  end if;
+  if p_code is null or length(trim(p_code)) = 0 then
+    raise exception 'code is required.';
+  end if;
+  if p_name is null or length(trim(p_name)) = 0 then
+    raise exception 'name is required.';
+  end if;
+  if p_timezone is null or length(trim(p_timezone)) = 0 then
+    raise exception 'timezone is required.';
+  end if;
+  -- The hostname-safe CHECK on campuses.code surfaces here as a clean error
+  -- if p_code violates the RFC 1035 charset.
+  insert into public.campuses(code, name, timezone)
+  values (upper(trim(p_code)), trim(p_name), trim(p_timezone))
+  returning * into v_row;
+
+  insert into public.audit_events(event_type, actor_profile_id, actor_campus, metadata)
+  values ('admin_create_campus', v_admin.profile_id, v_admin.campus,
+          jsonb_build_object('code', v_row.code, 'name', v_row.name, 'timezone', v_row.timezone));
+
+  return to_jsonb(v_row);
+end;
+$$;
+
+create or replace function public.admin_rename_campus(
+  p_old_code text,
+  p_new_code text
+)
+returns jsonb
+language plpgsql security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_admin public.profiles;
+  v_row public.campuses;
+begin
+  v_admin := public.assert_admin_scope();
+  if v_admin.admin_campus_scope is not null then
+    raise exception 'Only global admins may rename campuses.';
+  end if;
+  if p_old_code is null or p_new_code is null then
+    raise exception 'Both old and new codes are required.';
+  end if;
+  -- The ON UPDATE CASCADE on profiles.campus / system_secrets.campus /
+  -- audit_events.actor_campus / notifications.target_campus propagates the
+  -- rename automatically. Synthetic auth emails encode the campus code, so
+  -- after a rename, every account's auth.users.email must be rewritten too;
+  -- callers should run scripts/migrate-synthetic-emails.mjs (or a similar
+  -- targeted script) after this RPC.
+  update public.campuses
+     set code = upper(trim(p_new_code))
+   where code = upper(trim(p_old_code))
+   returning * into v_row;
+  if v_row.code is null then
+    raise exception 'Campus % not found.', p_old_code;
+  end if;
+
+  insert into public.audit_events(event_type, actor_profile_id, actor_campus, metadata)
+  values ('admin_rename_campus', v_admin.profile_id, v_admin.campus,
+          jsonb_build_object('old_code', upper(trim(p_old_code)), 'new_code', v_row.code));
+
+  return to_jsonb(v_row);
+end;
+$$;
+
+create or replace function public.admin_delete_campus(p_code text)
+returns jsonb
+language plpgsql security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_admin public.profiles;
+  v_active_count integer;
+  v_code text;
+begin
+  v_admin := public.assert_admin_scope();
+  if v_admin.admin_campus_scope is not null then
+    raise exception 'Only global admins may delete campuses.';
+  end if;
+  v_code := upper(trim(coalesce(p_code, '')));
+  if v_code = '' then
+    raise exception 'code is required.';
+  end if;
+  -- Refuse if any non-archived profile still belongs to this campus. Daily
+  -- temp rows in system_secrets are pruned automatically; we don't gate on
+  -- them.
+  select count(*) into v_active_count
+  from public.profiles
+  where campus = v_code and archived_at is null;
+  if v_active_count > 0 then
+    raise exception 'Campus % still has % active profile(s). Revoke them first.',
+      v_code, v_active_count;
+  end if;
+  delete from public.campuses where code = v_code;
+
+  insert into public.audit_events(event_type, actor_profile_id, actor_campus, metadata)
+  values ('admin_delete_campus', v_admin.profile_id, v_admin.campus,
+          jsonb_build_object('code', v_code));
+
+  return jsonb_build_object('code', v_code, 'deleted', true);
+end;
+$$;
+
+create or replace function public.admin_set_geofence(
+  p_code text,
+  p_lat double precision,
+  p_lon double precision,
+  p_radius_metres integer
+)
+returns jsonb
+language plpgsql security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_admin public.profiles;
+  v_row public.campuses;
+  v_code text;
+  v_all_null boolean;
+  v_all_set boolean;
+begin
+  v_code := upper(trim(coalesce(p_code, '')));
+  if v_code = '' then
+    raise exception 'code is required.';
+  end if;
+  -- assert_admin_scope allows global admins (NULL scope) and per-campus admins
+  -- whose scope matches v_code; rejects everyone else.
+  v_admin := public.assert_admin_scope(p_target_campus => v_code);
+
+  v_all_null := p_lat is null and p_lon is null and p_radius_metres is null;
+  v_all_set  := p_lat is not null and p_lon is not null and p_radius_metres is not null;
+  if not (v_all_null or v_all_set) then
+    raise exception 'lat, lon, radius_metres must all be set or all be null.';
+  end if;
+  if p_lat is not null and (p_lat < -90 or p_lat > 90) then
+    raise exception 'lat must be in [-90, 90].';
+  end if;
+  if p_lon is not null and (p_lon < -180 or p_lon > 180) then
+    raise exception 'lon must be in [-180, 180].';
+  end if;
+  if p_radius_metres is not null and p_radius_metres <= 0 then
+    raise exception 'radius_metres must be positive.';
+  end if;
+
+  update public.campuses
+     set center_lat = p_lat,
+         center_lon = p_lon,
+         radius_metres = p_radius_metres
+   where code = v_code
+   returning * into v_row;
+  if v_row.code is null then
+    raise exception 'Campus % not found.', v_code;
+  end if;
+
+  insert into public.audit_events(event_type, actor_profile_id, actor_campus, metadata)
+  values ('admin_set_geofence', v_admin.profile_id, v_admin.campus,
+          jsonb_build_object(
+            'code', v_row.code,
+            'lat', p_lat, 'lon', p_lon, 'radius_metres', p_radius_metres,
+            'cleared', v_all_null));
+
+  return to_jsonb(v_row);
+end;
+$$;
+
 -- Revoke every refresh token for a user. Used by the reset-password Edge
 -- Function as an explicit force-logout that doesn't depend on GoTrue's
 -- side effects from a password change. Returns the deleted row count.
@@ -1408,6 +1596,10 @@ revoke all on function public.list_unclaimed_profiles(text) from public, anon, a
 revoke all on function public.post_notification(text, text, text, text, text, text, uuid, boolean, timestamptz) from public, anon, authenticated;
 revoke all on function public.pin_notification(uuid) from public, anon, authenticated;
 revoke all on function public.view_audit_events(integer, integer, text) from public, anon, authenticated;
+revoke all on function public.admin_create_campus(text, text, text) from public, anon, authenticated;
+revoke all on function public.admin_rename_campus(text, text) from public, anon, authenticated;
+revoke all on function public.admin_delete_campus(text) from public, anon, authenticated;
+revoke all on function public.admin_set_geofence(text, double precision, double precision, integer) from public, anon, authenticated;
 
 grant execute on function public.get_current_login_profile(uuid) to authenticated;
 grant execute on function public.mark_password_set() to authenticated;
@@ -1424,6 +1616,10 @@ grant execute on function public.list_unclaimed_profiles(text) to authenticated;
 grant execute on function public.post_notification(text, text, text, text, text, text, uuid, boolean, timestamptz) to authenticated;
 grant execute on function public.pin_notification(uuid) to authenticated;
 grant execute on function public.view_audit_events(integer, integer, text) to authenticated;
+grant execute on function public.admin_create_campus(text, text, text) to authenticated;
+grant execute on function public.admin_rename_campus(text, text) to authenticated;
+grant execute on function public.admin_delete_campus(text) to authenticated;
+grant execute on function public.admin_set_geofence(text, double precision, double precision, integer) to authenticated;
 
 -- Edge Function helpers called via service_role (provision, rotate-daily,
 -- revoke, reset-password).

@@ -7,7 +7,12 @@
 // Request:
 //   POST /functions/v1/reset-password
 //   Authorization: Bearer <admin JWT>
-//   Body: { pass_id: "X-123" }
+//   Body: { pass_id: "X-123", campus?: "PROTO" }
+//
+// Campus is required to disambiguate (pass-IDs are unique per campus, not
+// globally). Per-campus admins may omit it; their admin_campus_scope is used.
+// Global admins must supply it explicitly; otherwise a same-string pass-ID
+// in multiple campuses returns a 400.
 //
 // Response:
 //   {
@@ -38,6 +43,7 @@ import { generateTempPassword } from "../_shared/password.ts";
 
 interface ResetRequest {
   pass_id?: string;
+  campus?: string;
 }
 
 Deno.serve(async (req: Request) => {
@@ -70,32 +76,53 @@ Deno.serve(async (req: Request) => {
   if (!passId) {
     return jsonResponse(req, { ok: false, error: "pass_id is required." }, 400);
   }
+  const requestedCampus = typeof body.campus === "string" && body.campus.trim()
+    ? body.campus.trim().toUpperCase()
+    : null;
 
   const service = serviceRoleClient();
 
-  // Look up target profile by pass-ID.
-  const { data: target, error: lookupErr } = await service
+  // Look up target profile by (campus, pass_id). Pass-IDs are unique per
+  // campus, not globally, so a campus is required to disambiguate. Per-campus
+  // admins default to their own scope when none is provided; global admins
+  // must supply one explicitly. limit(2) lets us distinguish the ambiguous
+  // case cleanly without relying on .maybeSingle() (which errors on >1).
+  const effectiveCampus = requestedCampus ?? caller.admin_campus_scope ?? null;
+  let lookupQuery = service
     .from("profiles")
     .select("profile_id, pass_id, campus, password_set_at, archived_at")
     .eq("pass_id", passId)
-    .maybeSingle();
+    .is("archived_at", null)
+    .limit(2);
+  if (effectiveCampus) lookupQuery = lookupQuery.eq("campus", effectiveCampus);
+  const { data: rows, error: lookupErr } = await lookupQuery;
   if (lookupErr) {
     return jsonResponse(req, { ok: false, error: lookupErr.message }, 500);
   }
-  if (!target) {
+  if (!rows || rows.length === 0) {
     return jsonResponse(
       req,
-      { ok: false, error: `No active profile for ${passId}.` },
+      {
+        ok: false,
+        error: effectiveCampus
+          ? `No active profile for ${passId} in ${effectiveCampus}.`
+          : `No active profile for ${passId}.`,
+      },
       404,
     );
   }
-  if (target.archived_at) {
+  if (rows.length > 1) {
     return jsonResponse(
       req,
-      { ok: false, error: `Profile ${passId} is archived.` },
-      409,
+      {
+        ok: false,
+        error:
+          `Pass-ID ${passId} exists in more than one campus. Specify campus in the request.`,
+      },
+      400,
     );
   }
+  const target = rows[0];
 
   try {
     assertAdmin(caller, target.campus);

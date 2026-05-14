@@ -94,6 +94,12 @@
     state.mountEl.innerHTML = "";
     const root = document.createElement("section");
     root.className = "zone admin-zone";
+    // Per-campus admins get every campus field pre-filled with their scope and
+    // pinned read-only — the server already rejects out-of-scope values, but
+    // this prevents accidental edits and surfaces "this is fixed" visually.
+    // Global admins get editable fields (and could later get a <select>).
+    const pinCampus = state.profile.admin_campus_scope != null;
+    const campusAttrs = pinCampus ? "readonly" : "";
     root.innerHTML = `
       <div class="zone-heading"><h2>Admin panel</h2><span class="status">Role: admin${
         state.profile.admin_campus_scope
@@ -105,7 +111,7 @@
         <h3>Today's temp password</h3>
         <div class="admin-row">
           <input id="admin-temp-campus" type="text" placeholder="Campus code"
-                 value="${state.profile.admin_campus_scope ?? ""}" />
+                 value="${state.profile.admin_campus_scope ?? ""}" ${campusAttrs} />
           <button id="admin-temp-refresh" type="button">Refresh</button>
         </div>
         <p class="status-line" id="admin-temp-display">—</p>
@@ -133,7 +139,7 @@
           </select>
         </div>
         <div class="admin-row">
-          <input id="admin-single-campus" type="text" placeholder="Campus" value="${state.profile.admin_campus_scope ?? ""}" required />
+          <input id="admin-single-campus" type="text" placeholder="Campus" value="${state.profile.admin_campus_scope ?? ""}" ${campusAttrs} required />
           <input id="admin-single-group" type="text" placeholder="Group" required />
           <input id="admin-single-subgroup" type="text" placeholder="Sub-group" required />
         </div>
@@ -166,7 +172,7 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
       <div class="admin-section">
         <h3>Revoke</h3>
         <div class="admin-row">
-          <input id="admin-revoke-campus" type="text" placeholder="Campus" value="${state.profile.admin_campus_scope ?? ""}" />
+          <input id="admin-revoke-campus" type="text" placeholder="Campus" value="${state.profile.admin_campus_scope ?? ""}" ${campusAttrs} />
           <input id="admin-revoke-group" type="text" placeholder="Group (optional)" />
           <input id="admin-revoke-subgroup" type="text" placeholder="Sub-group (optional)" />
         </div>
@@ -180,6 +186,8 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
         <h3>Reset password</h3>
         <p class="status-line">Sends the user back to today's per-campus daily temp. Unclaimed accounts are not touched. Claimed accounts are signed out from every device.</p>
         <div class="admin-row">
+          <input id="admin-reset-campus" type="text" placeholder="Campus"
+                 value="${state.profile.admin_campus_scope ?? ""}" ${campusAttrs} ${pinCampus ? "" : "required"} />
           <input id="admin-reset-pass-id" type="text" placeholder="Pass ID"
                  pattern="${PASS_ID_PATTERN}" maxlength="32" required />
           <button id="admin-reset-submit" type="button">Reset to daily temp</button>
@@ -193,7 +201,7 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
         <textarea id="admin-notif-body" rows="3" placeholder="Body (max 2000 chars)" maxlength="2000" required></textarea>
         <input id="admin-notif-link" type="url" placeholder="Optional link URL" />
         <div class="admin-row">
-          <input id="admin-notif-campus" type="text" placeholder="Target campus (blank = any)" value="${state.profile.admin_campus_scope ?? ""}" />
+          <input id="admin-notif-campus" type="text" placeholder="Target campus (blank = any)" value="${state.profile.admin_campus_scope ?? ""}" ${campusAttrs} />
           <input id="admin-notif-group" type="text" placeholder="Target group (blank = any)" />
           <input id="admin-notif-subgroup" type="text" placeholder="Target sub-group (blank = any)" />
         </div>
@@ -205,6 +213,38 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
           <button id="admin-notif-submit" type="button">Post</button>
         </div>
         <p class="status-line" id="admin-notif-status"></p>
+      </div>
+
+      ${pinCampus ? "" : `
+      <div class="admin-section">
+        <h3>Campuses</h3>
+        <p class="status-line">Global admin only. Create, rename, or delete campuses. Rename uses ON UPDATE CASCADE; after a rename, run the email-rewrite script for affected accounts.</p>
+        <div class="admin-row">
+          <input id="admin-campus-create-code" type="text" placeholder="Code (e.g. CAMPUS_A)" maxlength="63" />
+          <input id="admin-campus-create-name" type="text" placeholder="Name" />
+          <input id="admin-campus-create-tz" type="text" placeholder="Timezone (e.g. Asia/Singapore)" value="Asia/Singapore" />
+          <button id="admin-campus-create-submit" type="button">Create</button>
+        </div>
+        <div class="admin-row">
+          <button id="admin-campus-list-refresh" type="button">Refresh list</button>
+        </div>
+        <ul id="admin-campus-list" class="admin-list"></ul>
+        <p class="status-line" id="admin-campus-status"></p>
+      </div>
+      `}
+
+      <div class="admin-section">
+        <h3>Geofence</h3>
+        <p class="status-line">Set the centre and radius used by campus-grounds check-in. Leave all three blank to disable.</p>
+        <div class="admin-row">
+          <input id="admin-geofence-campus" type="text" placeholder="Campus"
+                 value="${state.profile.admin_campus_scope ?? ""}" ${campusAttrs} />
+          <input id="admin-geofence-lat" type="number" step="any" placeholder="Latitude" />
+          <input id="admin-geofence-lon" type="number" step="any" placeholder="Longitude" />
+          <input id="admin-geofence-radius" type="number" min="1" step="1" placeholder="Radius (m)" />
+          <button id="admin-geofence-submit" type="button">Save</button>
+        </div>
+        <p class="status-line" id="admin-geofence-status"></p>
       </div>
 
       <div class="admin-section">
@@ -231,6 +271,12 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
     bind("admin-revoke-submit", handleRevoke, "admin-revoke-result");
     bind("admin-reset-submit", handleReset, "admin-reset-result");
     bind("admin-notif-submit", handleNotify, "admin-notif-status");
+    if (!pinCampus) {
+      bind("admin-campus-create-submit", handleCampusCreate, "admin-campus-status");
+      bind("admin-campus-list-refresh", refreshCampusList, "admin-campus-status");
+    }
+    bind("admin-geofence-submit", handleGeofenceSave, "admin-geofence-status");
+    if (!pinCampus) refreshCampusList();
     bind(
       "admin-audit-prev",
       () => {
@@ -603,15 +649,24 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
       .getElementById("admin-reset-pass-id")
       .value.trim()
       .toUpperCase();
+    const campus = document
+      .getElementById("admin-reset-campus")
+      .value.trim()
+      .toUpperCase();
     const result = document.getElementById("admin-reset-result");
     result.hidden = false;
     if (!passId) {
       result.textContent = "Pass ID is required.";
       return;
     }
+    if (!campus) {
+      result.textContent = "Campus is required.";
+      return;
+    }
     result.textContent = "Calling reset-password function...";
+    const body = { pass_id: passId, campus };
     const { data, error } = await invokeWithTimeout("reset-password", {
-      body: { pass_id: passId },
+      body,
     });
     if (error) {
       result.textContent = `reset-password failed: ${error.message}`;
@@ -714,6 +769,144 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1,"></text
       const li = document.createElement("li");
       li.textContent = err.message;
       list.append(li);
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Campus management (global admin only)
+  // ---------------------------------------------------------------------------
+
+  async function refreshCampusList() {
+    const list = document.getElementById("admin-campus-list");
+    if (!list) return; // not rendered for per-campus admins
+    list.innerHTML = "";
+    const { data, error } = await state.supabase
+      .from("campuses")
+      .select("code, name, timezone, center_lat, center_lon, radius_metres")
+      .order("code");
+    if (error) {
+      const li = document.createElement("li");
+      li.textContent = `List failed: ${error.message}`;
+      list.append(li);
+      return;
+    }
+    if (!data || data.length === 0) {
+      const li = document.createElement("li");
+      li.textContent = "No campuses.";
+      list.append(li);
+      return;
+    }
+    for (const c of data) {
+      const li = document.createElement("li");
+      const geo = c.center_lat != null
+        ? ` — geofence ${c.center_lat}, ${c.center_lon} (${c.radius_metres}m)`
+        : " — no geofence";
+      const meta = document.createElement("span");
+      meta.textContent = `${c.code} — ${c.name} — ${c.timezone}${geo}`;
+      const renameBtn = document.createElement("button");
+      renameBtn.type = "button";
+      renameBtn.textContent = "Rename";
+      renameBtn.style.marginLeft = "0.5em";
+      renameBtn.addEventListener("click", () => handleCampusRename(c.code));
+      const deleteBtn = document.createElement("button");
+      deleteBtn.type = "button";
+      deleteBtn.textContent = "Delete";
+      deleteBtn.style.marginLeft = "0.25em";
+      deleteBtn.addEventListener("click", () => handleCampusDelete(c.code));
+      li.append(meta, renameBtn, deleteBtn);
+      list.append(li);
+    }
+  }
+
+  async function handleCampusCreate() {
+    const code = document.getElementById("admin-campus-create-code").value.trim().toUpperCase();
+    const name = document.getElementById("admin-campus-create-name").value.trim();
+    const tz = document.getElementById("admin-campus-create-tz").value.trim();
+    const status = document.getElementById("admin-campus-status");
+    if (!code || !name || !tz) {
+      status.textContent = "Code, name, and timezone are all required.";
+      return;
+    }
+    try {
+      const data = await state.rpc("admin_create_campus", {
+        p_code: code,
+        p_name: name,
+        p_timezone: tz,
+      });
+      status.textContent = `Created ${data.code} (${data.name}).`;
+      document.getElementById("admin-campus-create-code").value = "";
+      document.getElementById("admin-campus-create-name").value = "";
+      await refreshCampusList();
+    } catch (err) {
+      status.textContent = err.message;
+    }
+  }
+
+  async function handleCampusRename(oldCode) {
+    const status = document.getElementById("admin-campus-status");
+    const newCode = prompt(`Rename ${oldCode} to:`, oldCode);
+    if (!newCode || newCode.trim().toUpperCase() === oldCode) return;
+    if (!confirm(
+      `Rename ${oldCode} → ${newCode.trim().toUpperCase()}? FK ON UPDATE CASCADE propagates the rename. Synthetic auth emails encode the campus code, so you must run the email-rewrite script afterwards or affected users will be locked out.`,
+    )) return;
+    try {
+      const data = await state.rpc("admin_rename_campus", {
+        p_old_code: oldCode,
+        p_new_code: newCode.trim().toUpperCase(),
+      });
+      status.textContent = `Renamed to ${data.code}. Remember to rewrite synthetic emails.`;
+      await refreshCampusList();
+    } catch (err) {
+      status.textContent = err.message;
+    }
+  }
+
+  async function handleCampusDelete(code) {
+    const status = document.getElementById("admin-campus-status");
+    if (!confirm(`Delete campus ${code}? This is rejected if any active profiles still reference it.`)) return;
+    try {
+      await state.rpc("admin_delete_campus", { p_code: code });
+      status.textContent = `Deleted ${code}.`;
+      await refreshCampusList();
+    } catch (err) {
+      status.textContent = err.message;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Geofence
+  // ---------------------------------------------------------------------------
+
+  async function handleGeofenceSave() {
+    const code = document.getElementById("admin-geofence-campus").value.trim().toUpperCase();
+    const latRaw = document.getElementById("admin-geofence-lat").value.trim();
+    const lonRaw = document.getElementById("admin-geofence-lon").value.trim();
+    const radRaw = document.getElementById("admin-geofence-radius").value.trim();
+    const status = document.getElementById("admin-geofence-status");
+    if (!code) {
+      status.textContent = "Campus is required.";
+      return;
+    }
+    const allBlank = !latRaw && !lonRaw && !radRaw;
+    const allSet = latRaw && lonRaw && radRaw;
+    if (!(allBlank || allSet)) {
+      status.textContent = "Provide all three (lat, lon, radius) or leave all blank to clear.";
+      return;
+    }
+    const params = {
+      p_code: code,
+      p_lat: allBlank ? null : Number(latRaw),
+      p_lon: allBlank ? null : Number(lonRaw),
+      p_radius_metres: allBlank ? null : Number(radRaw),
+    };
+    try {
+      const data = await state.rpc("admin_set_geofence", params);
+      status.textContent = allBlank
+        ? `Cleared geofence for ${data.code}.`
+        : `Set geofence for ${data.code}: ${data.center_lat}, ${data.center_lon} (${data.radius_metres}m).`;
+      await refreshCampusList();
+    } catch (err) {
+      status.textContent = err.message;
     }
   }
 
