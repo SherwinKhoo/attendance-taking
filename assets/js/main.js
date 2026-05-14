@@ -702,28 +702,31 @@ function renderLoggedIn(profile) {
   applySessionScopeDefaults(profile);
 }
 
-// Pre-fill and gate the scope fields based on the caller's role. Global admins
-// (role=admin AND admin_campus_scope IS NULL) get fully editable fields (campus
-// may be cleared for cross-campus sessions). Everyone else is pinned to their
-// own campus; representatives and coordinators are additionally pinned to their
-// own group and sub-group. The server enforces all of this — these client
-// settings are UX scaffolding so the operator can't accidentally enter values
-// the server will reject.
+// Pre-fill and gate the scope fields based on the caller's role:
+//   * Global admin (role=admin, admin_campus_scope IS NULL): all three fields
+//     editable; campus may be cleared for cross-campus sessions.
+//   * Per-campus admin AND coordinator: campus pinned read-only to their
+//     scope/campus; group and sub-group editable (any value within the campus,
+//     or blank).
+//   * Representative: all three fields pinned read-only to the caller's tuple.
+// The server enforces all of this in create_attendance_session — these client
+// gates are UX scaffolding so the operator can't accidentally enter values the
+// server will reject.
 function applySessionScopeDefaults(profile) {
   if (!els.sessionScopeCampus) return;
   const isGlobalAdmin = profile.role === "admin" && profile.admin_campus_scope == null;
   const isCampusAdmin = profile.role === "admin" && profile.admin_campus_scope != null;
+  const isCoordinator = profile.role === "coordinator";
+  const groupEditable = isGlobalAdmin || isCampusAdmin || isCoordinator;
   const pinnedCampus = isCampusAdmin ? profile.admin_campus_scope : profile.campus;
   els.sessionScopeCampus.value = pinnedCampus ?? "";
   els.sessionScopeCampus.readOnly = !isGlobalAdmin;
-  if (isGlobalAdmin || profile.role === "admin") {
-    // Admins (global or per-campus) may scope anywhere in their campus.
+  if (groupEditable) {
     els.sessionScopeGroup.value = "";
     els.sessionScopeGroup.readOnly = false;
     els.sessionScopeSubgroup.value = "";
     els.sessionScopeSubgroup.readOnly = false;
   } else {
-    // Representatives and coordinators are pinned to their own group/sub_group.
     els.sessionScopeGroup.value = profile.group_name ?? "";
     els.sessionScopeGroup.readOnly = true;
     els.sessionScopeSubgroup.value = profile.sub_group ?? "";

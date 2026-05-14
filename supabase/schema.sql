@@ -515,22 +515,28 @@ begin
     raise exception 'Group scope requires a campus scope.';
   end if;
 
-  -- Safeguards: only the global admin (role=admin, admin_campus_scope IS NULL)
-  -- may set scope_campus to NULL (cross-campus) or to a campus other than their
-  -- own. Representatives, coordinators, and per-campus admins are pinned to
-  -- their own campus. Representatives and coordinators are additionally pinned
-  -- to their own group_name and sub_group when those scope levels are set.
+  -- Safeguards:
+  --   * Global admin (role=admin, admin_campus_scope IS NULL): no restriction;
+  --     may scope to any campus or to NULL (cross-campus).
+  --   * Per-campus admin (role=admin, admin_campus_scope set) AND coordinator:
+  --     campus pinned (admin_campus_scope or own campus respectively); group
+  --     and sub-group may be any value within that campus, or blank.
+  --   * Representative: pinned to their full (campus, group, sub_group) tuple
+  --     when those scope levels are set.
   if not v_is_global_admin then
     if v_scope_campus is null then
       raise exception 'Only global admins may create cross-campus sessions.';
     end if;
     if v_caller.role = 'admin' then
-      -- Per-campus admin: campus must match admin_campus_scope.
       if v_scope_campus <> v_caller.admin_campus_scope then
         raise exception 'Admin scope does not include campus %.', v_scope_campus;
       end if;
+    elsif v_caller.role = 'coordinator' then
+      if v_scope_campus <> v_caller.campus then
+        raise exception 'You can only create sessions within your own campus.';
+      end if;
     else
-      -- Representative / coordinator: pinned to their full tuple.
+      -- Representative: pinned to their full tuple.
       if v_scope_campus <> v_caller.campus then
         raise exception 'You can only create sessions within your own campus.';
       end if;
