@@ -144,16 +144,15 @@ Deno.serve(async (req: Request) => {
   for (const t of targets) {
     // Delete the auth.users row. profiles.profile_id REFERENCES
     // auth.users(id) ON DELETE CASCADE, so this also removes the matching
-    // profile row (and, via the SET NULL FK we added on
-    // audit_events.actor_profile_id, leaves audit history intact with a
-    // null actor). The metadata jsonb below still records pass_id +
-    // profile_id strings for forensic lookups.
-    //
-    // CAVEAT: if the revoked user has rows in attendance_sessions,
-    // attendance_attempts, or notifications.created_by, those FKs are
-    // still NO ACTION and will block the cascade. The error path below
-    // surfaces that explicitly so an operator knows to address those FKs
-    // (same SET NULL / nullable-column pattern) before re-trying.
+    // profile row. All four profile-referencing FKs (audit_events.actor_profile_id,
+    // attendance_attempts.profile_id, attendance_sessions.creator_profile_id,
+    // notifications.created_by) are ON DELETE SET NULL, so the cascade
+    // succeeds even for users with attendance / session / notification
+    // history. Forensic identity survives via denormalized snapshots:
+    // audit_events.metadata jsonb, attendance_attempts.submitter_pass_id
+    // (+ submitter_campus), attendance_sessions.creator_pass_id
+    // (+ creator_campus). The metadata jsonb on the revoke audit row below
+    // also records pass_id + profile_id strings.
     const { error: delErr } = await service.auth.admin.deleteUser(t.profile_id);
     if (delErr) {
       errors.push({

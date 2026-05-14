@@ -126,7 +126,12 @@ create table public.attendance_sessions (
   grace_period_minutes integer not null default 0 check (grace_period_minutes >= 0),
   creator_lat double precision not null,
   creator_lon double precision not null,
-  creator_profile_id uuid not null references public.profiles(profile_id),
+  -- SET NULL so revoke / profile delete leaves the session row intact.
+  -- creator_pass_id / creator_campus snapshot the creator's identifying
+  -- strings at insert time for forensic lookups after the FK is nulled.
+  creator_profile_id uuid references public.profiles(profile_id) on delete set null,
+  creator_pass_id text,
+  creator_campus text,
   creator_device_install_id uuid not null,
   active boolean not null default true,
   -- Check-in modes. At least one must be enabled (CHECK below). QR is the
@@ -149,7 +154,12 @@ create table public.attendance_attempts (
   session_code text not null,
   session_name text not null,
   scanned_session_payload jsonb not null,
-  profile_id uuid not null references public.profiles(profile_id),
+  -- SET NULL on profile delete; submitter_pass_id / submitter_campus
+  -- snapshot the submitter's identifying strings so report RPCs and CSV
+  -- exports still resolve a pass ID after the user is revoked.
+  profile_id uuid references public.profiles(profile_id) on delete set null,
+  submitter_pass_id text,
+  submitter_campus text,
   device_install_id uuid not null,
   submitted_at timestamptz not null default now(),
   submitter_lat double precision not null,
@@ -195,7 +205,7 @@ create table public.notifications (
   body text not null,
   link_url text,
   pinned boolean not null default false,
-  created_by uuid references public.profiles(profile_id),
+  created_by uuid references public.profiles(profile_id) on delete set null,
   created_at timestamptz not null default now(),
   expires_at timestamptz
 );
@@ -464,13 +474,13 @@ begin
 
   insert into public.attendance_sessions(
     code, name, intended_start_at, grace_period_minutes,
-    creator_lat, creator_lon, creator_profile_id, creator_device_install_id,
-    allow_qr, allow_geofence
+    creator_lat, creator_lon, creator_profile_id, creator_pass_id, creator_campus,
+    creator_device_install_id, allow_qr, allow_geofence
   )
   values (
     upper(trim(p_code)), trim(p_name), p_intended_start_at, p_grace_period_minutes,
-    p_creator_lat, p_creator_lon, v_caller.profile_id, p_device_install_id,
-    p_allow_qr, p_allow_geofence
+    p_creator_lat, p_creator_lon, v_caller.profile_id, v_caller.pass_id, v_caller.campus,
+    p_device_install_id, p_allow_qr, p_allow_geofence
   )
   returning * into v_session;
 
@@ -608,12 +618,14 @@ begin
 
   insert into public.attendance_attempts(
     session_id, session_code, session_name, scanned_session_payload,
-    profile_id, device_install_id, submitter_lat, submitter_lon,
+    profile_id, submitter_pass_id, submitter_campus,
+    device_install_id, submitter_lat, submitter_lon,
     status, flags, canonical, distance_from_session_m
   )
   values (
     v_session.id, v_session.code, v_session.name, p_session_payload,
-    v_caller.profile_id, p_device_install_id, p_submitter_lat, p_submitter_lon,
+    v_caller.profile_id, v_caller.pass_id, v_caller.campus,
+    p_device_install_id, p_submitter_lat, p_submitter_lon,
     case when cardinality(v_flags) > 0 then 'flagged' else 'accepted' end,
     v_flags, v_canonical, v_distance
   )
@@ -766,12 +778,14 @@ begin
 
   insert into public.attendance_attempts(
     session_id, session_code, session_name, scanned_session_payload,
-    profile_id, device_install_id, submitter_lat, submitter_lon,
+    profile_id, submitter_pass_id, submitter_campus,
+    device_install_id, submitter_lat, submitter_lon,
     status, flags, canonical, distance_from_session_m
   )
   values (
     v_session.id, v_session.code, v_session.name, v_payload,
-    v_caller.profile_id, p_device_install_id, p_submitter_lat, p_submitter_lon,
+    v_caller.profile_id, v_caller.pass_id, v_caller.campus,
+    p_device_install_id, p_submitter_lat, p_submitter_lon,
     case when cardinality(v_flags) > 0 then 'flagged' else 'accepted' end,
     v_flags, v_canonical, v_distance
   )
@@ -818,7 +832,7 @@ begin
 
   return coalesce((
     select jsonb_agg(jsonb_build_object(
-      'pass_id', p.pass_id,
+      'pass_id', coalesce(p.pass_id, a.submitter_pass_id),
       'submitted_at', a.submitted_at,
       'status', a.status,
       'flags', a.flags,
@@ -826,11 +840,11 @@ begin
       'attempt_count', (
         select count(*) from public.attendance_attempts attempts
         where attempts.session_id = a.session_id
-          and attempts.profile_id = a.profile_id
+          and attempts.submitter_pass_id = a.submitter_pass_id
       )
     ) order by a.submitted_at)
     from public.attendance_attempts a
-    join public.profiles p on p.profile_id = a.profile_id
+    left join public.profiles p on p.profile_id = a.profile_id
     where a.session_id = p_session_id
   ), '[]'::jsonb);
 end;
@@ -864,12 +878,12 @@ begin
       concat_ws(',',
         public.csv_cell(a.session_code),
         public.csv_cell(a.session_name),
-        public.csv_cell(p.pass_id),
+        public.csv_cell(coalesce(p.pass_id, a.submitter_pass_id)),
         public.csv_cell(a.submitted_at::text),
         (
           select count(*)::text from public.attendance_attempts attempts
           where attempts.session_id = a.session_id
-            and attempts.profile_id = a.profile_id
+            and attempts.submitter_pass_id = a.submitter_pass_id
         ),
         cardinality(a.flags)::text,
         public.csv_cell(array_to_string(a.flags, '|')),
@@ -879,7 +893,7 @@ begin
         coalesce(round(a.distance_from_session_m::numeric, 2)::text, '')
       )
     from public.attendance_attempts a
-    join public.profiles p on p.profile_id = a.profile_id
+    left join public.profiles p on p.profile_id = a.profile_id
     where a.session_id = p_session_id
       and a.canonical
   ) rows
