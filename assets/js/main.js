@@ -31,8 +31,10 @@ const CONFIG = {
   CAMPUS_PATTERN: "[A-Za-z0-9]([A-Za-z0-9\\-]{0,61}[A-Za-z0-9])?",
   PASS_ID_REGEX: /^[A-Z0-9][A-Z0-9_-]{2,31}$/i,
   PASS_ID_PATTERN: "[A-Za-z0-9][A-Za-z0-9_\\-]{2,31}",
-  PASSWORD_REGEX: /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*._-])[A-Za-z0-9!@#$%^&*._-]{10,16}$/,
-  PASSWORD_PATTERN: "(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[!@#$%^&*._\\-])[A-Za-z0-9!@#$%^&*._\\-]{10,16}",
+  PASSWORD_REGEX:
+    /^(?=.*[a-z])(?=.*[A-Z])(?=.*\d)(?=.*[!@#$%^&*._-])[A-Za-z0-9!@#$%^&*._-]{10,16}$/,
+  PASSWORD_PATTERN:
+    "(?=.*[a-z])(?=.*[A-Z])(?=.*\\d)(?=.*[!@#$%^&*._\\-])[A-Za-z0-9!@#$%^&*._\\-]{10,16}",
   PASSWORD_ALLOWED_CHARS_REGEX: /^[A-Za-z0-9!@#$%^&*._-]*$/,
   PASSWORD_ALLOWED_MESSAGE:
     "Use 10-16 characters with upper and lower case letters, numbers, and an approved symbol (!@#$%^&*._-).",
@@ -159,19 +161,19 @@ app.innerHTML = `
         </label>
       </fieldset>
       <fieldset class="form-field">
-        <legend>Scope — Campus</legend>
+        <legend>Campus</legend>
         <label class="field-control" aria-label="Scope campus">
           <input id="session-scope-campus" name="session-scope-campus" type="text" autocomplete="off" maxlength="63" placeholder="Campus code" />
         </label>
       </fieldset>
       <fieldset class="form-field">
-        <legend>Scope — Group (optional)</legend>
+        <legend>Group (optional)</legend>
         <label class="field-control" aria-label="Scope group">
           <input id="session-scope-group" name="session-scope-group" type="text" autocomplete="off" maxlength="120" placeholder="Leave blank for campus-wide" />
         </label>
       </fieldset>
       <fieldset class="form-field">
-        <legend>Scope — Sub-group (optional)</legend>
+        <legend>Sub-group (optional)</legend>
         <label class="field-control" aria-label="Scope sub-group">
           <input id="session-scope-subgroup" name="session-scope-subgroup" type="text" autocomplete="off" maxlength="120" placeholder="Leave blank for group-wide" />
         </label>
@@ -184,7 +186,7 @@ app.innerHTML = `
       <fieldset class="checkin-modes">
         <legend>Check-in modes</legend>
         <label><input id="mode-qr" type="checkbox" checked /> QR scan</label>
-        <label><input id="mode-geofence" type="checkbox" /> Campus grounds (no QR)</label>
+        <label><input id="mode-geofence" type="checkbox" /> No QR Code</label>
       </fieldset>
       <button id="generate-session" type="submit">Generate QR Code</button>
     </form>
@@ -195,7 +197,7 @@ app.innerHTML = `
     <div class="action-row">
       <button id="fullscreen-qr" type="button" disabled>Full-screen poster</button>
       <button id="refresh-attendee-total" type="button" disabled>Refresh attendee total</button>
-      <button id="export-csv" type="button" disabled>Export canonical CSV</button>
+      <button id="export-csv" type="button" disabled>Export CSV</button>
     </div>
     <p class="status-line" id="attendee-total">Total attendees: 0</p>
     <p class="status-line" id="session-status"></p>
@@ -345,7 +347,9 @@ const els = {
   sessionScopeGroup: document.getElementById("session-scope-group"),
   sessionScopeSubgroup: document.getElementById("session-scope-subgroup"),
   barcodeFormat: document.getElementById("barcode-format"),
-  manageableSessionsSelect: document.getElementById("manageable-sessions-select"),
+  manageableSessionsSelect: document.getElementById(
+    "manageable-sessions-select",
+  ),
   sessionQr: document.getElementById("session-qr"),
   sessionSummary: document.getElementById("session-summary"),
   attendeeTotal: document.getElementById("attendee-total"),
@@ -358,7 +362,9 @@ const els = {
   loginCampus: document.getElementById("login-campus"),
   passId: document.getElementById("pass-id"),
   password: document.getElementById("password"),
-  passwordVisibilityToggle: document.getElementById("password-visibility-toggle"),
+  passwordVisibilityToggle: document.getElementById(
+    "password-visibility-toggle",
+  ),
   loginSubmit: document.getElementById("login-submit"),
   loginStatus: document.getElementById("login-status"),
   confirmDialog: document.getElementById("confirm-dialog"),
@@ -375,7 +381,9 @@ const els = {
   passwordNewToggle: document.getElementById("password-new-toggle"),
   passwordConfirm: document.getElementById("password-confirm"),
   passwordConfirmToggle: document.getElementById("password-confirm-toggle"),
-  passwordDialogValidation: document.getElementById("password-dialog-validation"),
+  passwordDialogValidation: document.getElementById(
+    "password-dialog-validation",
+  ),
   passwordCancel: document.getElementById("password-cancel"),
   passwordSubmit: document.getElementById("password-submit"),
   settingsDialog: document.getElementById("settings-dialog"),
@@ -440,8 +448,11 @@ function getOrCreateDeviceInstallId() {
 
 function createSupabaseClient() {
   const config = window.ATTENDANCE_CONFIG || {};
-  const url = config.supabaseUrl || localStorage.getItem("attendance.supabaseUrl");
-  const key = config.supabaseAnonKey || localStorage.getItem("attendance.supabaseAnonKey");
+  const url =
+    config.supabaseUrl || localStorage.getItem("attendance.supabaseUrl");
+  const key =
+    config.supabaseAnonKey ||
+    localStorage.getItem("attendance.supabaseAnonKey");
   if (!url || !key || !window.supabase?.createClient) {
     return null;
   }
@@ -487,9 +498,12 @@ function withTimeout(promise, ms, label) {
   let timer;
   const timeout = new Promise((_, reject) => {
     timer = setTimeout(
-      () => reject(new Error(
-        `${label} timed out after ${Math.round(ms / 1000)}s. Network or session may be stalled — try reloading.`,
-      )),
+      () =>
+        reject(
+          new Error(
+            `${label} timed out after ${Math.round(ms / 1000)}s. Network or session may be stalled — try reloading.`,
+          ),
+        ),
       ms,
     );
   });
@@ -516,7 +530,8 @@ async function rpc(name, params) {
 async function bootstrapAuth() {
   if (!state.supabase) {
     renderLoggedOut();
-    els.loginStatus.textContent = "Supabase configuration is required. Add config.local.js locally or configure GitHub Pages to publish runtime config.";
+    els.loginStatus.textContent =
+      "Supabase configuration is required. Add config.local.js locally or configure GitHub Pages to publish runtime config.";
     return;
   }
   let data, error;
@@ -543,7 +558,11 @@ async function bootstrapAuth() {
   state.supabase.auth.onAuthStateChange(async (event) => {
     if (event === "SIGNED_OUT") {
       renderLoggedOut();
-    } else if (event === "SIGNED_IN" || event === "TOKEN_REFRESHED" || event === "USER_UPDATED") {
+    } else if (
+      event === "SIGNED_IN" ||
+      event === "TOKEN_REFRESHED" ||
+      event === "USER_UPDATED"
+    ) {
       if (passwordChangeInProgress) return;
       // TOKEN_REFRESHED fires on every silent access-token rotation, which
       // happens on most tab wake-ups via the wake-recovery handler. The
@@ -580,22 +599,30 @@ function attachWakeRecovery() {
 
 async function onAuthenticated() {
   try {
-    const profile = await rpc("get_current_login_profile", { p_device_install_id: state.deviceInstallId });
+    const profile = await rpc("get_current_login_profile", {
+      p_device_install_id: state.deviceInstallId,
+    });
     if (!profile) {
       // Profile row is gone but the JWT is still valid — usually because a
       // destructive schema reapply dropped public.profiles while leaving
       // auth.users intact. Tear down the in-app state cleanly (handleLogout
       // signs out + clears local storage + calls renderLoggedOut, which
       // hides every zone and opens the login modal).
-      els.loginStatus.textContent = "Your account is no longer active. Please sign in again.";
+      els.loginStatus.textContent =
+        "Your account is no longer active. Please sign in again.";
       await handleLogout();
       return;
     }
     state.profile = profile;
     if (profile.archived_at) {
-      els.loginStatus.textContent = "This account has been archived. Please contact your administrator.";
+      els.loginStatus.textContent =
+        "This account has been archived. Please contact your administrator.";
       try {
-        await withTimeout(state.supabase.auth.signOut(), TIMEOUT_AUTH_MS, "auth.signOut()");
+        await withTimeout(
+          state.supabase.auth.signOut(),
+          TIMEOUT_AUTH_MS,
+          "auth.signOut()",
+        );
       } catch (err) {
         console.warn("[auth] signOut error (continuing):", err);
       }
@@ -670,23 +697,25 @@ function renderLoggedOut() {
   }
   els.settingsToggle.hidden = true;
   els.attendanceLoginStatus.textContent = "Not logged in";
+  els.loginCampus.value = "";
   els.passId.value = "";
-  els.password.value = "";
-  els.loginCampus.value = localStorage.getItem(STORAGE_KEYS.lastCampus) ?? "";
+  resetPasswordField(els.password, els.passwordVisibilityToggle);
   els.loginStatus.textContent = "Sign in with your pass ID.";
   els.fullscreenQr.disabled = true;
   els.refreshAttendeeTotal.disabled = true;
   els.exportCsv.disabled = true;
   els.attendeeTotal.textContent = "Total attendees: 0";
   els.sessionStatus.textContent = "";
-  els.sessionSummary.textContent = "No session generated yet. Use the form above or click \"Restore latest\".";
+  els.sessionSummary.textContent =
+    'No session generated yet. Use the form above or click "Restore latest".';
   els.attendanceZone.hidden = true;
   els.geofenceZone.hidden = true;
   els.sessionZone.hidden = true;
   resetOpenSessionsList();
   state.manageableSessions = [];
   if (els.manageableSessionsSelect) {
-    els.manageableSessionsSelect.innerHTML = '<option value="">Open a session…</option>';
+    els.manageableSessionsSelect.innerHTML =
+      '<option value="">Open a session…</option>';
   }
   if (window.AttendanceAdmin?.unmount) window.AttendanceAdmin.unmount();
   clearBarcodeDisplay();
@@ -723,11 +752,15 @@ function renderLoggedIn(profile) {
 // server will reject.
 function applySessionScopeDefaults(profile) {
   if (!els.sessionScopeCampus) return;
-  const isGlobalAdmin = profile.role === "admin" && profile.admin_campus_scope == null;
-  const isCampusAdmin = profile.role === "admin" && profile.admin_campus_scope != null;
+  const isGlobalAdmin =
+    profile.role === "admin" && profile.admin_campus_scope == null;
+  const isCampusAdmin =
+    profile.role === "admin" && profile.admin_campus_scope != null;
   const isCoordinator = profile.role === "coordinator";
   const groupEditable = isGlobalAdmin || isCampusAdmin || isCoordinator;
-  const pinnedCampus = isCampusAdmin ? profile.admin_campus_scope : profile.campus;
+  const pinnedCampus = isCampusAdmin
+    ? profile.admin_campus_scope
+    : profile.campus;
   els.sessionScopeCampus.value = pinnedCampus ?? "";
   els.sessionScopeCampus.readOnly = !isGlobalAdmin;
   if (groupEditable) {
@@ -761,7 +794,9 @@ async function withCooldown(button, fn) {
   } finally {
     const elapsed = performance.now() - start;
     const remaining = Math.max(0, BUTTON_COOLDOWN_MS - elapsed);
-    setTimeout(() => { button.disabled = false; }, remaining);
+    setTimeout(() => {
+      button.disabled = false;
+    }, remaining);
   }
 }
 function bindCooldown(button, fn) {
@@ -784,11 +819,20 @@ function resetOpenSessionsList() {
 
 function attachEventListeners() {
   els.attendanceCameraToggle.addEventListener("click", () =>
-    toggleCamera(state.attendanceCamera, els.attendanceCamera, els.attendanceCameraToggle, els.attendanceScan, els.attendanceStatus),
+    toggleCamera(
+      state.attendanceCamera,
+      els.attendanceCamera,
+      els.attendanceCameraToggle,
+      els.attendanceScan,
+      els.attendanceStatus,
+    ),
   );
   els.attendanceScan.addEventListener("click", handleAttendanceScan);
   els.sessionForm.addEventListener("submit", handleSessionCreate);
-  els.manageableSessionsSelect.addEventListener("change", handleManageableSessionSelect);
+  els.manageableSessionsSelect.addEventListener(
+    "change",
+    handleManageableSessionSelect,
+  );
   els.fullscreenQr.addEventListener("click", openFullscreenQr);
   bindCooldown(els.refreshAttendeeTotal, refreshAttendeeTotal);
   bindCooldown(els.exportCsv, handleCsvExport);
@@ -824,7 +868,9 @@ function attachEventListeners() {
   els.cancelSubmit.addEventListener("click", () => {
     pendingSessionPayload = null;
   });
-  els.settingsToggle.addEventListener("click", () => els.settingsDialog.showModal());
+  els.settingsToggle.addEventListener("click", () =>
+    els.settingsDialog.showModal(),
+  );
   els.settingsClose.addEventListener("click", () => els.settingsDialog.close());
   els.darkModeToggle.addEventListener("change", (e) => {
     applyDarkMode(e.target.checked);
@@ -858,7 +904,9 @@ function attachEventListeners() {
     event.preventDefault();
     handlePasswordSubmit();
   });
-  els.qrFullscreenClose.addEventListener("click", () => els.qrFullscreenDialog.close());
+  els.qrFullscreenClose.addEventListener("click", () =>
+    els.qrFullscreenDialog.close(),
+  );
 }
 
 function attachConnectivityListeners() {
@@ -954,7 +1002,7 @@ async function handleLogout() {
   // Drop app-local non-auth state. (Supabase's own keys are cleared by signOut.)
   for (const key of Object.values(STORAGE_KEYS)) {
     if (key === STORAGE_KEYS.deviceInstallId) continue; // keep device id stable
-    if (key === STORAGE_KEYS.darkMode) continue;        // user UI preference
+    if (key === STORAGE_KEYS.darkMode) continue; // user UI preference
     localStorage.removeItem(key);
   }
   // Force the logged-out UI even if SIGNED_OUT didn't fire.
@@ -966,6 +1014,13 @@ function toggleFieldVisibility(inputEl, toggleBtn) {
   inputEl.type = isVisible ? "password" : "text";
   toggleBtn.textContent = isVisible ? "Show" : "Hide";
   toggleBtn.setAttribute("aria-pressed", String(!isVisible));
+}
+
+function resetPasswordField(inputEl, toggleBtn) {
+  inputEl.value = "";
+  inputEl.type = "password";
+  toggleBtn.textContent = "Show";
+  toggleBtn.setAttribute("aria-pressed", "false");
 }
 
 function bindPasswordCharacterPolicy(inputEl) {
@@ -999,9 +1054,9 @@ function bindPasswordCharacterPolicy(inputEl) {
 function openPasswordDialog({ title, intro, force }) {
   els.passwordDialogTitle.textContent = title;
   els.passwordDialogIntro.textContent = intro;
-  els.passwordOld.value = "";
-  els.passwordNew.value = "";
-  els.passwordConfirm.value = "";
+  resetPasswordField(els.passwordOld, els.passwordOldToggle);
+  resetPasswordField(els.passwordNew, els.passwordNewToggle);
+  resetPasswordField(els.passwordConfirm, els.passwordConfirmToggle);
   els.passwordDialogValidation.textContent = "";
   syncPasswordCustomValidity();
   els.passwordCancel.textContent = force ? "Sign out" : "Cancel";
@@ -1024,10 +1079,12 @@ async function handlePasswordSubmit() {
     return;
   }
 
-  const passId = state.profile?.pass_id || els.passId.value.trim().toUpperCase();
+  const passId =
+    state.profile?.pass_id || els.passId.value.trim().toUpperCase();
   const campus = state.profile?.campus;
   if (!passId || !campus) {
-    els.passwordDialogValidation.textContent = "Pass ID unknown — please log in again.";
+    els.passwordDialogValidation.textContent =
+      "Pass ID unknown — please log in again.";
     return;
   }
 
@@ -1051,7 +1108,8 @@ async function handlePasswordSubmit() {
       return;
     }
     if (reauthErr) {
-      els.passwordDialogValidation.textContent = "Current password is incorrect.";
+      els.passwordDialogValidation.textContent =
+        "Current password is incorrect.";
       return;
     }
 
@@ -1101,7 +1159,9 @@ function syncPasswordCustomValidity() {
     els.passwordConfirm.value &&
     els.passwordNew.value !== els.passwordConfirm.value
   ) {
-    els.passwordConfirm.setCustomValidity("New password and confirmation do not match.");
+    els.passwordConfirm.setCustomValidity(
+      "New password and confirmation do not match.",
+    );
     return;
   }
   if (
@@ -1109,7 +1169,9 @@ function syncPasswordCustomValidity() {
     els.passwordNew.value &&
     els.passwordOld.value === els.passwordNew.value
   ) {
-    els.passwordNew.setCustomValidity("New password must be different from current password.");
+    els.passwordNew.setCustomValidity(
+      "New password must be different from current password.",
+    );
   }
 }
 
@@ -1206,7 +1268,8 @@ function subscribeSessionsBroadcast() {
 async function handleProfileDelete() {
   showToast("This account has been revoked. Signing you out.");
   await handleLogout();
-  els.loginStatus.textContent = "This account has been revoked. Please contact your administrator.";
+  els.loginStatus.textContent =
+    "This account has been revoked. Please contact your administrator.";
 }
 
 async function handleProfileUpdate(payload) {
@@ -1218,7 +1281,8 @@ async function handleProfileUpdate(payload) {
     // makes the UI react immediately instead of waiting for the next request.
     showToast("This account has been revoked. Signing you out.");
     await handleLogout();
-    els.loginStatus.textContent = "This account has been revoked. Please contact your administrator.";
+    els.loginStatus.textContent =
+      "This account has been revoked. Please contact your administrator.";
     return;
   }
 
@@ -1229,10 +1293,14 @@ async function handleProfileUpdate(payload) {
   // locally-cached profile thinks the password *was* set (false) — i.e.
   // this is a transition, not the user's initial unclaimed sign-in.
   const newPasswordSetAt = payload?.new?.password_set_at;
-  if (newPasswordSetAt === null && state.profile?.needs_password_change === false) {
+  if (
+    newPasswordSetAt === null &&
+    state.profile?.needs_password_change === false
+  ) {
     showToast("Your password has been reset. Signing you out.");
     await handleLogout();
-    els.loginStatus.textContent = "Your password was reset by an administrator. Sign in with today's daily temp.";
+    els.loginStatus.textContent =
+      "Your password was reset by an administrator. Sign in with today's daily temp.";
   }
 }
 
@@ -1302,7 +1370,13 @@ function renderNotifications() {
 // Camera & scanning
 // -----------------------------------------------------------------------------
 
-async function toggleCamera(cameraState, video, toggleButton, scanButton, statusElement) {
+async function toggleCamera(
+  cameraState,
+  video,
+  toggleButton,
+  scanButton,
+  statusElement,
+) {
   try {
     if (!cameraState.isActive) {
       cameraState.mediaStream = await navigator.mediaDevices.getUserMedia({
@@ -1367,7 +1441,8 @@ async function submitPendingAttendance() {
     // the submitter — telling someone they were flagged trains them around it.
     els.attendanceStatus.textContent = `Submitted attendance for ${payload.session_name}.`;
   } catch (error) {
-    els.attendanceStatus.textContent = error.message || "Attendance submission failed.";
+    els.attendanceStatus.textContent =
+      error.message || "Attendance submission failed.";
   } finally {
     els.attendanceScan.disabled = !state.attendanceCamera.isActive;
   }
@@ -1381,7 +1456,10 @@ async function handleSessionCreate(event) {
   event.preventDefault();
   if (!requireLogin(els.sessionStatus)) return;
 
-  const intendedStart = toIsoFromDateAndTime(els.sessionDate.value, els.sessionTime.value);
+  const intendedStart = toIsoFromDateAndTime(
+    els.sessionDate.value,
+    els.sessionTime.value,
+  );
   if (!intendedStart) {
     els.sessionStatus.textContent = "Choose an intended start date and time.";
     return;
@@ -1406,16 +1484,20 @@ async function handleSessionCreate(event) {
     return;
   }
   if (allowGeofence && !scopeCampus) {
-    els.sessionStatus.textContent = "Campus-grounds mode requires a campus scope.";
+    els.sessionStatus.textContent =
+      "Campus-grounds mode requires a campus scope.";
     return;
   }
 
-  const submitBtn = event.submitter ?? document.getElementById("generate-session");
+  const submitBtn =
+    event.submitter ?? document.getElementById("generate-session");
   submitBtn.disabled = true;
   try {
     els.sessionStatus.textContent = "Getting creator location...";
     const position = await getDeviceLocation();
-    els.sessionStatus.textContent = allowQr ? "Generating QR code..." : "Creating session...";
+    els.sessionStatus.textContent = allowQr
+      ? "Generating QR code..."
+      : "Creating session...";
     const payload = await rpc("create_attendance_session", {
       p_code: crypto.randomUUID(),
       p_name: els.sessionName.value.trim(),
@@ -1433,12 +1515,14 @@ async function handleSessionCreate(event) {
 
     await applySessionPayload(payload);
     await populateManageableSessionsPicker();
-    if (els.manageableSessionsSelect) els.manageableSessionsSelect.value = payload.session_id;
+    if (els.manageableSessionsSelect)
+      els.manageableSessionsSelect.value = payload.session_id;
     els.sessionStatus.textContent = allowQr
       ? "Session QR generated."
       : "Campus-grounds session opened. Attendees can find it under Check in.";
   } catch (error) {
-    els.sessionStatus.textContent = error.message || "Could not create session.";
+    els.sessionStatus.textContent =
+      error.message || "Could not create session.";
   } finally {
     submitBtn.disabled = false;
   }
@@ -1455,7 +1539,8 @@ async function refreshOpenSessions() {
   try {
     rows = await rpc("list_open_geofence_sessions");
   } catch (err) {
-    els.geofenceStatus.textContent = err.message || "Could not load open sessions.";
+    els.geofenceStatus.textContent =
+      err.message || "Could not load open sessions.";
     return;
   }
   els.openSessionsList.innerHTML = "";
@@ -1538,7 +1623,8 @@ async function applySessionPayload(payload) {
 async function populateManageableSessionsPicker() {
   if (!els.manageableSessionsSelect) return;
   if (!state.profile) return;
-  if (!["representative", "coordinator", "admin"].includes(state.profile.role)) return;
+  if (!["representative", "coordinator", "admin"].includes(state.profile.role))
+    return;
 
   let rows;
   try {
@@ -1562,7 +1648,10 @@ async function populateManageableSessionsPicker() {
     opt.textContent = `${row.session_name} (${row.session_code})`;
     els.manageableSessionsSelect.appendChild(opt);
   }
-  if (previousId && state.manageableSessions.some((r) => r.session_id === previousId)) {
+  if (
+    previousId &&
+    state.manageableSessions.some((r) => r.session_id === previousId)
+  ) {
     els.manageableSessionsSelect.value = previousId;
   }
 }
@@ -1570,7 +1659,9 @@ async function populateManageableSessionsPicker() {
 async function handleManageableSessionSelect(event) {
   const sessionId = event.target.value;
   if (!sessionId) return;
-  const payload = state.manageableSessions.find((r) => r.session_id === sessionId);
+  const payload = state.manageableSessions.find(
+    (r) => r.session_id === sessionId,
+  );
   if (!payload) {
     els.sessionStatus.textContent = "Session not found in the current list.";
     return;
@@ -1592,11 +1683,16 @@ async function refreshAttendeeTotal() {
     return;
   }
   try {
-    const rows = await rpc("view_session_attendance", { p_session_id: state.latestSession.session_id });
-    const canonical = new Set((rows || []).filter((r) => r.canonical).map((r) => r.pass_id));
+    const rows = await rpc("view_session_attendance", {
+      p_session_id: state.latestSession.session_id,
+    });
+    const canonical = new Set(
+      (rows || []).filter((r) => r.canonical).map((r) => r.pass_id),
+    );
     els.attendeeTotal.textContent = `Total attendees: ${canonical.size}`;
   } catch (error) {
-    els.sessionStatus.textContent = error.message || "Could not refresh attendee total.";
+    els.sessionStatus.textContent =
+      error.message || "Could not refresh attendee total.";
   }
 }
 
@@ -1607,7 +1703,11 @@ async function handleCsvExport() {
     const csv = await rpc("export_canonical_attendance_csv", {
       p_session_id: state.latestSession.session_id,
     });
-    downloadText(`${state.latestSession.session_code}-canonical-attendance.csv`, csv, "text/csv");
+    downloadText(
+      `${state.latestSession.session_code}-canonical-attendance.csv`,
+      csv,
+      "text/csv",
+    );
     els.sessionStatus.textContent = "Canonical attendance CSV exported.";
   } catch (error) {
     els.sessionStatus.textContent = error.message || "CSV export failed.";
@@ -1633,7 +1733,11 @@ async function renderSessionQr(payload) {
     creator_lat: payload.creator_lat,
     creator_lon: payload.creator_lon,
   };
-  await renderBarcodeToCanvas(JSON.stringify(qrPayload), els.sessionQr, els.barcodeFormat.value);
+  await renderBarcodeToCanvas(
+    JSON.stringify(qrPayload),
+    els.sessionQr,
+    els.barcodeFormat.value,
+  );
 }
 
 async function renderBarcodeToCanvas(payloadText, canvas, format) {
@@ -1646,10 +1750,19 @@ async function renderBarcodeToCanvas(payloadText, canvas, format) {
   ctx.imageSmoothingEnabled = false;
   ctx.fillStyle = "#ffffff";
   ctx.fillRect(0, 0, canvas.width, canvas.height);
-  const scale = Math.min(canvas.width / imageBitmap.width, canvas.height / imageBitmap.height);
+  const scale = Math.min(
+    canvas.width / imageBitmap.width,
+    canvas.height / imageBitmap.height,
+  );
   const w = imageBitmap.width * scale;
   const h = imageBitmap.height * scale;
-  ctx.drawImage(imageBitmap, (canvas.width - w) / 2, (canvas.height - h) / 2, w, h);
+  ctx.drawImage(
+    imageBitmap,
+    (canvas.width - w) / 2,
+    (canvas.height - h) / 2,
+    w,
+    h,
+  );
   imageBitmap.close();
 }
 
@@ -1673,7 +1786,11 @@ async function writeBarcodeWithBestSize(payloadText, format) {
     }
     throw lastError || new Error("QR payload is too large.");
   }
-  const out = await ZXingWASM.writeBarcode(payloadText, { format, scale: 4, withQuietZones: true });
+  const out = await ZXingWASM.writeBarcode(payloadText, {
+    format,
+    scale: 4,
+    withQuietZones: true,
+  });
   if (!out.image) throw new Error(out.error || "Barcode generation failed.");
   return out;
 }
@@ -1729,7 +1846,8 @@ function requireLogin(statusElement) {
 
 async function scanBarcodeFromVideo(video) {
   if (!window.ZXingWASM) throw new Error("Barcode library failed to load.");
-  if (!video.videoWidth || !video.videoHeight) throw new Error("Camera is not ready yet.");
+  if (!video.videoWidth || !video.videoHeight)
+    throw new Error("Camera is not ready yet.");
   const canvas = document.createElement("canvas");
   canvas.width = video.videoWidth;
   canvas.height = video.videoHeight;
@@ -1755,10 +1873,16 @@ function parseSessionPayload(scannedText) {
     throw new Error("Scanned QR is not a session payload.");
   }
   const required = [
-    "session_code", "session_name", "intended_start_at",
-    "grace_period_minutes", "creator_lat", "creator_lon",
+    "session_code",
+    "session_name",
+    "intended_start_at",
+    "grace_period_minutes",
+    "creator_lat",
+    "creator_lon",
   ];
-  const missing = required.filter((k) => payload[k] === undefined || payload[k] === null || payload[k] === "");
+  const missing = required.filter(
+    (k) => payload[k] === undefined || payload[k] === null || payload[k] === "",
+  );
   if (missing.length) throw new Error("Session QR is missing required fields.");
   if (!Number.isFinite(new Date(payload.intended_start_at).getTime())) {
     throw new Error("Session QR contains an invalid start time.");
@@ -1826,13 +1950,13 @@ function downloadText(filename, text, mimeType) {
   }, 100);
 }
 
-// Reject any URL whose scheme isn't http/https. Defends against javascript: and
-// data: URLs in admin-authored notification links.
+// Reject any URL whose scheme isn't https. Defends against javascript:, data:,
+// and plaintext http:// in admin-authored notification links.
 function sanitiseLinkUrl(raw) {
   if (typeof raw !== "string" || !raw) return null;
   try {
     const u = new URL(raw);
-    if (u.protocol === "http:" || u.protocol === "https:") return u.toString();
+    if (u.protocol === "https:") return u.toString();
   } catch {
     /* not a valid URL */
   }
@@ -1854,4 +1978,6 @@ window.AttendanceMain = {
   getSupabase: () => state.supabase,
   withTimeout,
   TIMEOUT_INVOKE_MS,
+  escapeHtml,
+  sanitiseLinkUrl,
 };

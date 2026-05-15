@@ -1282,9 +1282,9 @@ begin
     raise exception 'Body is required and must be at most 2000 characters.';
   end if;
 
-  -- Reject non-http(s) link URLs (javascript:, data:, etc.).
-  if p_link_url is not null and p_link_url !~* '^https?://' then
-    raise exception 'link_url must start with http:// or https://.';
+  -- Reject non-https link URLs (javascript:, data:, plaintext http://, etc.).
+  if p_link_url is not null and p_link_url !~* '^https://' then
+    raise exception 'link_url must start with https://.';
   end if;
 
   -- If pinning, unpin any existing pin at the same scope first.
@@ -1377,6 +1377,10 @@ begin
 
   if p_limit is null or p_limit < 1 or p_limit > 500 then
     raise exception 'Limit must be between 1 and 500.';
+  end if;
+
+  if p_offset is null or p_offset < 0 then
+    raise exception 'Offset must be non-negative.';
   end if;
 
   return coalesce((

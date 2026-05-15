@@ -25,6 +25,8 @@ test("login dialog blocks until valid credentials, persists across reload, and l
   await page.fill("#login-campus", "PROTO");
   await page.fill("#pass-id", "U-001");
   await page.fill("#password", "Wrong-Pass!1");
+  await page.click("#password-visibility-toggle");
+  await expect(page.locator("#password")).toHaveJSProperty("type", "text");
   await page.click("#login-submit");
   await expect(loginDialog).toBeVisible();
   await expect(page.locator("#login-status")).toContainText("incorrect");
@@ -51,6 +53,12 @@ test("login dialog blocks until valid credentials, persists across reload, and l
   await expect(page.locator("#settings-dialog")).toBeHidden({ timeout: 5000 });
   await expect(loginDialog).toBeVisible({ timeout: 5000 });
   await expect(page.locator("#settings-toggle")).toBeHidden();
+  await expect(page.locator("#login-campus")).toHaveValue("");
+  await expect(page.locator("#pass-id")).toHaveValue("");
+  await expect(page.locator("#password")).toHaveValue("");
+  await expect(page.locator("#password")).toHaveJSProperty("type", "password");
+  await expect(page.locator("#password-visibility-toggle")).toHaveText("Show");
+  await expect(page.locator("#password-visibility-toggle")).toHaveAttribute("aria-pressed", "false");
 
   expect(errors).toEqual([]);
 });
@@ -68,6 +76,34 @@ test("settings dialog opens with dark-mode switch, change-password, log-out, and
   await expect(page.locator("#settings-change-password")).toBeVisible();
   await expect(page.locator("#settings-logout")).toBeVisible();
   await expect(page.locator("#notifications-list")).toBeVisible();
+
+  await page.click("#settings-change-password");
+  await expect(page.locator("#password-dialog")).toBeVisible();
+  await page.fill("#password-old", "Proto-Pass!1");
+  await page.fill("#password-new", "Proto-Pass!2");
+  await page.fill("#password-confirm", "Proto-Pass!2");
+  await page.click("#password-old-toggle");
+  await page.click("#password-new-toggle");
+  await page.click("#password-confirm-toggle");
+  await expect(page.locator("#password-old")).toHaveJSProperty("type", "text");
+  await page.click("#password-cancel");
+  await expect(page.locator("#password-dialog")).toBeHidden();
+
+  await page.click("#settings-toggle");
+  await page.click("#settings-change-password");
+  await expect(page.locator("#password-dialog")).toBeVisible();
+  await expect(page.locator("#password-old")).toHaveValue("");
+  await expect(page.locator("#password-new")).toHaveValue("");
+  await expect(page.locator("#password-confirm")).toHaveValue("");
+  await expect(page.locator("#password-old")).toHaveJSProperty("type", "password");
+  await expect(page.locator("#password-new")).toHaveJSProperty("type", "password");
+  await expect(page.locator("#password-confirm")).toHaveJSProperty("type", "password");
+  await expect(page.locator("#password-old-toggle")).toHaveText("Show");
+  await expect(page.locator("#password-new-toggle")).toHaveText("Show");
+  await expect(page.locator("#password-confirm-toggle")).toHaveText("Show");
+  await expect(page.locator("#password-old-toggle")).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#password-new-toggle")).toHaveAttribute("aria-pressed", "false");
+  await expect(page.locator("#password-confirm-toggle")).toHaveAttribute("aria-pressed", "false");
 });
 
 test("session card hides for the user role", async ({ page }) => {

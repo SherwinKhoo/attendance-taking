@@ -38,33 +38,14 @@ export function corsHeaders(req: Request): Record<string, string> {
   };
 }
 
-export function jsonResponse(req: Request, body: unknown, status = 200): Response;
-export function jsonResponse(body: unknown, status?: number): Response;
 export function jsonResponse(
-  reqOrBody: Request | unknown,
-  bodyOrStatus?: unknown,
+  req: Request,
+  body: unknown,
   status = 200,
 ): Response {
-  // Two call shapes for backward compatibility:
-  //   jsonResponse(body, status?)            — legacy, returns "*" in headers
-  //   jsonResponse(req, body, status?)       — new, returns origin-aware headers
-  if (reqOrBody instanceof Request) {
-    return new Response(JSON.stringify(bodyOrStatus), {
-      status: status ?? 200,
-      headers: { ...corsHeaders(reqOrBody), "Content-Type": "application/json" },
-    });
-  }
-  const fallback = {
-    "Access-Control-Allow-Origin": ALLOWED_ORIGINS.size === 0 ? "*" : "",
-    "Access-Control-Allow-Headers":
-      "authorization, x-client-info, apikey, content-type",
-    "Access-Control-Allow-Methods": "POST, OPTIONS",
-    "Vary": "Origin",
-    "Content-Type": "application/json",
-  };
-  return new Response(JSON.stringify(reqOrBody), {
-    status: typeof bodyOrStatus === "number" ? bodyOrStatus : 200,
-    headers: fallback,
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { ...corsHeaders(req), "Content-Type": "application/json" },
   });
 }
 
