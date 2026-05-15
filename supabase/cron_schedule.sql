@@ -56,3 +56,26 @@ select cron.schedule(
 -- 3. Verify:
 --      select * from cron.job where jobname = 'rotate-daily-temps';
 --      select * from cron.job_run_details order by start_time desc limit 5;
+
+-- =============================================================================
+-- Purge attendance sessions 24 h after their intended start. Pure SQL — no
+-- Edge Function needed, so no HTTP / vault / token plumbing here.
+-- =============================================================================
+
+do $$
+declare
+  r record;
+begin
+  for r in select jobid from cron.job where jobname = 'purge-expired-sessions' loop
+    perform cron.unschedule(r.jobid);
+  end loop;
+end $$;
+
+select cron.schedule(
+  'purge-expired-sessions',
+  '15 * * * *',
+  $cron$select public.purge_expired_sessions();$cron$
+);
+
+-- Verify:
+--      select * from cron.job where jobname = 'purge-expired-sessions';

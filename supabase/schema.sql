@@ -38,6 +38,7 @@ drop function if exists public.create_attendance_session(text, text, timestamptz
 drop function if exists public.get_latest_active_session_qr_for_creator(text, uuid, uuid);
 drop function if exists public.get_latest_active_session_qr_for_creator(uuid);
 drop function if exists public.list_manageable_sessions(integer);
+drop function if exists public.purge_expired_sessions();
 drop function if exists public.submit_attendance(jsonb, text, uuid, uuid, double precision, double precision);
 drop function if exists public.list_open_geofence_sessions();
 drop function if exists public.submit_geofence_attendance(uuid, uuid, double precision, double precision);
@@ -1014,7 +1015,7 @@ begin
         public.csv_cell(a.session_code),
         public.csv_cell(a.session_name),
         public.csv_cell(coalesce(p.pass_id, a.submitter_pass_id)),
-        public.csv_cell(a.submitted_at::text),
+        public.csv_cell(to_char(a.submitted_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')),
         (
           select count(*)::text from public.attendance_attempts attempts
           where attempts.session_id = a.session_id
@@ -1856,6 +1857,41 @@ begin
   return null;
 end;
 $$;
+
+-- -----------------------------------------------------------------------------
+-- Purge sessions 24 h after their intended start. attendance_attempts.session_id
+-- ON DELETE CASCADE wipes the attempts row-by-row; audit_events.session_id has
+-- no FK so audit history survives. Idempotent: safe to call any number of times.
+-- -----------------------------------------------------------------------------
+
+create or replace function public.purge_expired_sessions()
+returns integer
+language plpgsql
+security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_count integer;
+begin
+  with deleted as (
+    delete from public.attendance_sessions
+    where intended_start_at < now() - interval '24 hours'
+    returning id
+  )
+  select count(*) into v_count from deleted;
+
+  if v_count > 0 then
+    insert into public.audit_events(event_type, metadata)
+    values ('purge_expired_sessions', jsonb_build_object('deleted', v_count));
+  end if;
+
+  return v_count;
+end;
+$$;
+
+revoke all on function public.purge_expired_sessions() from public, anon, authenticated;
+-- pg_cron runs as the postgres role (or the role declared on the job), which
+-- bypasses these grants. No authenticated/anon execute grant is intentional.
 
 drop trigger if exists attendance_sessions_broadcast_trg on public.attendance_sessions;
 create trigger attendance_sessions_broadcast_trg
