@@ -36,6 +36,8 @@ drop function if exists public.create_attendance_session(text, text, timestamptz
 drop function if exists public.create_attendance_session(text, text, timestamptz, integer, double precision, double precision, uuid);
 drop function if exists public.create_attendance_session(text, text, timestamptz, integer, double precision, double precision, uuid, boolean, boolean);
 drop function if exists public.get_latest_active_session_qr_for_creator(text, uuid, uuid);
+drop function if exists public.get_latest_active_session_qr_for_creator(uuid);
+drop function if exists public.list_manageable_sessions(integer);
 drop function if exists public.submit_attendance(jsonb, text, uuid, uuid, double precision, double precision);
 drop function if exists public.list_open_geofence_sessions();
 drop function if exists public.submit_geofence_attendance(uuid, uuid, double precision, double precision);
@@ -602,8 +604,20 @@ begin
 end;
 $$;
 
-create or replace function public.get_latest_active_session_qr_for_creator(
-  p_device_install_id uuid
+-- Role-scoped list of active sessions the caller may "open" (resume / re-display
+-- QR / view roster / export). Replaces the creator-only get_latest_* RPC with a
+-- picker model:
+--   * Global admin (role=admin, admin_campus_scope IS NULL): every active
+--     session.
+--   * Per-campus admin: active sessions whose scope_campus matches their
+--     admin_campus_scope, plus global-admin-authored cross-campus sessions
+--     (scope_campus IS NULL).
+--   * Coordinator: same predicate but using their own campus.
+--   * Representative: only sessions whose scope includes the rep's own tuple —
+--     same scope predicate as list_open_geofence_sessions (without the
+--     allow_geofence requirement).
+create or replace function public.list_manageable_sessions(
+  p_limit integer default 50
 )
 returns jsonb
 language plpgsql security definer
@@ -611,41 +625,63 @@ set search_path = public, pg_temp
 as $$
 declare
   v_caller public.profiles;
-  v_session public.attendance_sessions;
+  v_is_global_admin boolean;
 begin
   v_caller := public.assert_authenticated();
 
   if v_caller.role not in ('representative', 'coordinator', 'admin') then
-    raise exception 'Only Representatives, Coordinators, and Admins can restore session QR codes.';
+    raise exception 'Only Representatives, Coordinators, and Admins can list manageable sessions.';
   end if;
 
-  select * into v_session
-  from public.attendance_sessions
-  where active
-    and creator_profile_id = v_caller.profile_id
-    and creator_device_install_id = p_device_install_id
-  order by created_at desc
-  limit 1;
-
-  if v_session.id is null then
-    return null;
+  if p_limit is null or p_limit < 1 then
+    p_limit := 50;
+  elsif p_limit > 500 then
+    p_limit := 500;
   end if;
 
-  insert into public.audit_events(event_type, actor_profile_id, actor_campus, device_install_id, session_id)
-  values ('restore_latest_active_session_qr', v_caller.profile_id, v_caller.campus, p_device_install_id, v_session.id);
+  v_is_global_admin := (v_caller.role = 'admin' and v_caller.admin_campus_scope is null);
 
-  return jsonb_build_object(
-    'version', 1,
-    'session_id', v_session.id,
-    'session_code', v_session.code,
-    'session_name', v_session.name,
-    'intended_start_at', v_session.intended_start_at,
-    'grace_period_minutes', v_session.grace_period_minutes,
-    'creator_lat', v_session.creator_lat,
-    'creator_lon', v_session.creator_lon,
-    'creator_profile_id', v_session.creator_profile_id,
-    'created_at', v_session.created_at
-  );
+  return coalesce((
+    select jsonb_agg(row_payload order by created_at desc)
+    from (
+      select
+        s.created_at,
+        jsonb_build_object(
+          'version', 1,
+          'session_id', s.id,
+          'session_code', s.code,
+          'session_name', s.name,
+          'intended_start_at', s.intended_start_at,
+          'grace_period_minutes', s.grace_period_minutes,
+          'creator_lat', s.creator_lat,
+          'creator_lon', s.creator_lon,
+          'creator_profile_id', s.creator_profile_id,
+          'creator_pass_id', s.creator_pass_id,
+          'allow_qr', s.allow_qr,
+          'allow_geofence', s.allow_geofence,
+          'scope_campus', s.scope_campus,
+          'scope_group_name', s.scope_group_name,
+          'scope_sub_group', s.scope_sub_group,
+          'active', s.active,
+          'created_at', s.created_at
+        ) as row_payload
+      from public.attendance_sessions s
+      where s.active
+        and (
+          v_is_global_admin
+          or (v_caller.role = 'admin'
+              and (s.scope_campus = v_caller.admin_campus_scope or s.scope_campus is null))
+          or (v_caller.role = 'coordinator'
+              and (s.scope_campus = v_caller.campus or s.scope_campus is null))
+          or (v_caller.role = 'representative'
+              and (s.scope_campus is null or s.scope_campus = v_caller.campus)
+              and (s.scope_group_name is null or s.scope_group_name = v_caller.group_name)
+              and (s.scope_sub_group is null or s.scope_sub_group = v_caller.sub_group))
+        )
+      order by s.created_at desc
+      limit p_limit
+    ) ordered
+  ), '[]'::jsonb);
 end;
 $$;
 
@@ -1699,7 +1735,7 @@ revoke all on function public.validate_password(text) from public, anon, authent
 revoke all on function public.create_attendance_session(text, text, timestamptz, integer, double precision, double precision, uuid, boolean, boolean, text, text, text) from public, anon, authenticated;
 revoke all on function public.list_open_geofence_sessions() from public, anon, authenticated;
 revoke all on function public.submit_geofence_attendance(uuid, uuid, double precision, double precision) from public, anon, authenticated;
-revoke all on function public.get_latest_active_session_qr_for_creator(uuid) from public, anon, authenticated;
+revoke all on function public.list_manageable_sessions(integer) from public, anon, authenticated;
 revoke all on function public.submit_attendance(jsonb, uuid, double precision, double precision) from public, anon, authenticated;
 revoke all on function public.view_session_attendance(uuid) from public, anon, authenticated;
 revoke all on function public.export_canonical_attendance_csv(uuid) from public, anon, authenticated;
@@ -1719,7 +1755,7 @@ grant execute on function public.validate_password(text) to authenticated;
 grant execute on function public.create_attendance_session(text, text, timestamptz, integer, double precision, double precision, uuid, boolean, boolean, text, text, text) to authenticated;
 grant execute on function public.list_open_geofence_sessions() to authenticated;
 grant execute on function public.submit_geofence_attendance(uuid, uuid, double precision, double precision) to authenticated;
-grant execute on function public.get_latest_active_session_qr_for_creator(uuid) to authenticated;
+grant execute on function public.list_manageable_sessions(integer) to authenticated;
 grant execute on function public.submit_attendance(jsonb, uuid, double precision, double precision) to authenticated;
 grant execute on function public.view_session_attendance(uuid) to authenticated;
 grant execute on function public.export_canonical_attendance_csv(uuid) to authenticated;

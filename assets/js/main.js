@@ -22,7 +22,6 @@ const ZXING_WASM_URL = `https://cdn.jsdelivr.net/npm/zxing-wasm@${ZXING_WASM_VER
 
 const STORAGE_KEYS = {
   deviceInstallId: "attendance.deviceInstallId",
-  latestCreatorSession: "attendance.latestCreatorSession",
   darkMode: "attendance.darkMode",
   lastCampus: "attendance.lastCampus",
 };
@@ -76,6 +75,7 @@ const state = {
   notifications: [],
   notificationsChannel: null,
   sessionsChannel: null,
+  manageableSessions: [],
 };
 
 // -----------------------------------------------------------------------------
@@ -127,7 +127,11 @@ app.innerHTML = `
   <section class="zone" id="session-zone" aria-labelledby="session-title" hidden>
     <div class="zone-heading">
       <div><h2 id="session-title">Generate Session</h2></div>
-      <button id="restore-session" type="button">Restore latest</button>
+      <label class="field-control inline-picker" aria-label="Open session">
+        <select id="manageable-sessions-select">
+          <option value="">Open a session…</option>
+        </select>
+      </label>
     </div>
     <form id="session-form" class="form-grid">
       <fieldset class="form-field">
@@ -169,7 +173,7 @@ app.innerHTML = `
       <fieldset class="form-field">
         <legend>Scope — Sub-group (optional)</legend>
         <label class="field-control" aria-label="Scope sub-group">
-          <input id="session-scope-subgroup" name="session-scope-subgroup" type="text" autocomplete="off" maxlength="120" placeholder="Leave blank for group-wide" disabled />
+          <input id="session-scope-subgroup" name="session-scope-subgroup" type="text" autocomplete="off" maxlength="120" placeholder="Leave blank for group-wide" />
         </label>
       </fieldset>
       <fieldset class="form-field is-hidden-format">
@@ -341,7 +345,7 @@ const els = {
   sessionScopeGroup: document.getElementById("session-scope-group"),
   sessionScopeSubgroup: document.getElementById("session-scope-subgroup"),
   barcodeFormat: document.getElementById("barcode-format"),
-  restoreSession: document.getElementById("restore-session"),
+  manageableSessionsSelect: document.getElementById("manageable-sessions-select"),
   sessionQr: document.getElementById("session-qr"),
   sessionSummary: document.getElementById("session-summary"),
   attendeeTotal: document.getElementById("attendee-total"),
@@ -680,6 +684,10 @@ function renderLoggedOut() {
   els.geofenceZone.hidden = true;
   els.sessionZone.hidden = true;
   resetOpenSessionsList();
+  state.manageableSessions = [];
+  if (els.manageableSessionsSelect) {
+    els.manageableSessionsSelect.innerHTML = '<option value="">Open a session…</option>';
+  }
   if (window.AttendanceAdmin?.unmount) window.AttendanceAdmin.unmount();
   clearBarcodeDisplay();
   closeIfOpen(els.passwordDialog);
@@ -700,6 +708,7 @@ function renderLoggedIn(profile) {
   els.sessionZone.hidden = profile.role === "user";
   els.attendanceLoginStatus.textContent = profile.pass_id ?? profile.profile_id;
   applySessionScopeDefaults(profile);
+  populateManageableSessionsPicker();
 }
 
 // Pre-fill and gate the scope fields based on the caller's role:
@@ -732,17 +741,6 @@ function applySessionScopeDefaults(profile) {
     els.sessionScopeSubgroup.value = profile.sub_group ?? "";
     els.sessionScopeSubgroup.readOnly = true;
   }
-  syncSessionScopeSubgroupEnabled();
-}
-
-function syncSessionScopeSubgroupEnabled() {
-  if (!els.sessionScopeGroup || !els.sessionScopeSubgroup) return;
-  const hasGroup = els.sessionScopeGroup.value.trim() !== "";
-  // Keep readonly pinning intact for non-admins — only toggle the enabled state
-  // when the field is editable (admins clearing the group blanks the sub-group).
-  if (els.sessionScopeSubgroup.readOnly) return;
-  els.sessionScopeSubgroup.disabled = !hasGroup;
-  if (!hasGroup) els.sessionScopeSubgroup.value = "";
 }
 
 function closeIfOpen(dialogEl) {
@@ -790,8 +788,7 @@ function attachEventListeners() {
   );
   els.attendanceScan.addEventListener("click", handleAttendanceScan);
   els.sessionForm.addEventListener("submit", handleSessionCreate);
-  els.sessionScopeGroup.addEventListener("input", syncSessionScopeSubgroupEnabled);
-  bindCooldown(els.restoreSession, restoreLatestSession);
+  els.manageableSessionsSelect.addEventListener("change", handleManageableSessionSelect);
   els.fullscreenQr.addEventListener("click", openFullscreenQr);
   bindCooldown(els.refreshAttendeeTotal, refreshAttendeeTotal);
   bindCooldown(els.exportCsv, handleCsvExport);
@@ -1201,6 +1198,7 @@ function subscribeSessionsBroadcast() {
     .channel("sessions:open")
     .on("broadcast", { event: "sessions_changed" }, () => {
       if (!els.geofenceZone?.hidden) refreshOpenSessions();
+      if (!els.sessionZone?.hidden) populateManageableSessionsPicker();
     })
     .subscribe();
 }
@@ -1359,14 +1357,15 @@ async function submitPendingAttendance() {
     els.attendanceStatus.textContent = "Getting submitter location...";
     const position = await getDeviceLocation();
     els.attendanceStatus.textContent = "Submitting attendance...";
-    const result = await rpc("submit_attendance", {
+    await rpc("submit_attendance", {
       p_session_payload: payload,
       p_device_install_id: state.deviceInstallId,
       p_submitter_lat: roundCoordinate(position.coords.latitude),
       p_submitter_lon: roundCoordinate(position.coords.longitude),
     });
-    const flags = result.flags?.length ? ` Flags: ${result.flags.join(", ")}.` : "";
-    els.attendanceStatus.textContent = `Submitted attendance for ${payload.session_name}. Status: ${result.status || "accepted"}.${flags}`;
+    // Server still records flags / status for audit; do not surface them to
+    // the submitter — telling someone they were flagged trains them around it.
+    els.attendanceStatus.textContent = `Submitted attendance for ${payload.session_name}.`;
   } catch (error) {
     els.attendanceStatus.textContent = error.message || "Attendance submission failed.";
   } finally {
@@ -1432,22 +1431,12 @@ async function handleSessionCreate(event) {
       p_scope_sub_group: scopeSubgroup,
     });
 
-    state.latestSession = payload;
-    localStorage.setItem(STORAGE_KEYS.latestCreatorSession, JSON.stringify(payload));
-    if (allowQr) {
-      await renderSessionQr(payload);
-      els.fullscreenQr.disabled = false;
-    } else {
-      clearBarcodeDisplay();
-      els.fullscreenQr.disabled = true;
-    }
-    renderSessionSummary(payload);
-    els.exportCsv.disabled = false;
-    els.refreshAttendeeTotal.disabled = false;
+    await applySessionPayload(payload);
+    await populateManageableSessionsPicker();
+    if (els.manageableSessionsSelect) els.manageableSessionsSelect.value = payload.session_id;
     els.sessionStatus.textContent = allowQr
       ? "Session QR generated."
       : "Campus-grounds session opened. Attendees can find it under Check in.";
-    await refreshAttendeeTotal();
   } catch (error) {
     els.sessionStatus.textContent = error.message || "Could not create session.";
   } finally {
@@ -1514,41 +1503,85 @@ async function handleGeofenceCheckIn(row, btn) {
   }
   els.geofenceStatus.textContent = "Submitting...";
   try {
-    const result = await rpc("submit_geofence_attendance", {
+    await rpc("submit_geofence_attendance", {
       p_session_id: row.session_id,
       p_device_install_id: state.deviceInstallId,
       p_submitter_lat: roundCoordinate(position.coords.latitude),
       p_submitter_lon: roundCoordinate(position.coords.longitude),
     });
-    const flagsNote = Array.isArray(result?.flags) && result.flags.length > 0
-      ? ` (flags: ${result.flags.join(", ")})`
-      : "";
-    els.geofenceStatus.textContent = `Checked in to "${row.session_name}".${flagsNote}`;
+    // Flags are recorded server-side for audit; do not surface them.
+    els.geofenceStatus.textContent = `Checked in to "${row.session_name}".`;
     if (btn) btn.textContent = "Checked in";
   } catch (err) {
     els.geofenceStatus.textContent = err.message || "Check-in failed.";
   }
 }
 
-async function restoreLatestSession() {
+// Shared apply path for both new-session creation and picker-based open. The
+// QR poster is only rendered for sessions that allow QR check-in; campus-
+// grounds-only sessions show summary + roster controls but no QR.
+async function applySessionPayload(payload) {
+  state.latestSession = payload;
+  if (payload.allow_qr) {
+    await renderSessionQr(payload);
+    els.fullscreenQr.disabled = false;
+  } else {
+    clearBarcodeDisplay();
+    els.fullscreenQr.disabled = true;
+  }
+  renderSessionSummary(payload);
+  els.exportCsv.disabled = false;
+  els.refreshAttendeeTotal.disabled = false;
+  await refreshAttendeeTotal();
+}
+
+async function populateManageableSessionsPicker() {
+  if (!els.manageableSessionsSelect) return;
   if (!state.profile) return;
   if (!["representative", "coordinator", "admin"].includes(state.profile.role)) return;
 
+  let rows;
   try {
-    const payload = await rpc("get_latest_active_session_qr_for_creator", {
-      p_device_install_id: state.deviceInstallId,
-    });
-    if (!payload) return;
-    state.latestSession = payload;
-    await renderSessionQr(payload);
-    renderSessionSummary(payload);
-    els.fullscreenQr.disabled = false;
-    els.exportCsv.disabled = false;
-    els.refreshAttendeeTotal.disabled = false;
-    els.sessionStatus.textContent = "Latest active session QR restored.";
-    await refreshAttendeeTotal();
+    rows = await rpc("list_manageable_sessions", { p_limit: 50 });
   } catch (error) {
-    els.sessionStatus.textContent = error.message;
+    console.warn("[manageable-sessions]", error.message);
+    return;
+  }
+  state.manageableSessions = Array.isArray(rows) ? rows : [];
+  const previousId = els.manageableSessionsSelect.value;
+  els.manageableSessionsSelect.innerHTML = "";
+  const placeholder = document.createElement("option");
+  placeholder.value = "";
+  placeholder.textContent = state.manageableSessions.length
+    ? "Open a session…"
+    : "No active sessions";
+  els.manageableSessionsSelect.appendChild(placeholder);
+  for (const row of state.manageableSessions) {
+    const opt = document.createElement("option");
+    opt.value = row.session_id;
+    opt.textContent = `${row.session_name} (${row.session_code})`;
+    els.manageableSessionsSelect.appendChild(opt);
+  }
+  if (previousId && state.manageableSessions.some((r) => r.session_id === previousId)) {
+    els.manageableSessionsSelect.value = previousId;
+  }
+}
+
+async function handleManageableSessionSelect(event) {
+  const sessionId = event.target.value;
+  if (!sessionId) return;
+  const payload = state.manageableSessions.find((r) => r.session_id === sessionId);
+  if (!payload) {
+    els.sessionStatus.textContent = "Session not found in the current list.";
+    return;
+  }
+  try {
+    await applySessionPayload(payload);
+    els.sessionStatus.textContent = payload.allow_qr
+      ? `Opened session "${payload.session_name}".`
+      : `Opened campus-grounds session "${payload.session_name}".`;
+  } catch (error) {
+    els.sessionStatus.textContent = error.message || "Could not open session.";
   }
 }
 
@@ -1586,7 +1619,21 @@ async function handleCsvExport() {
 // -----------------------------------------------------------------------------
 
 async function renderSessionQr(payload) {
-  await renderBarcodeToCanvas(JSON.stringify(payload), els.sessionQr, els.barcodeFormat.value);
+  // The QR-decoded JSON is consumed by submit_attendance, which only reads
+  // session_id and session_code. Project the payload down to that minimal pair
+  // so picker-sourced payloads (which carry scope / mode flags) produce the
+  // same compact QR as freshly-created sessions.
+  const qrPayload = {
+    version: payload.version ?? 1,
+    session_id: payload.session_id,
+    session_code: payload.session_code,
+    session_name: payload.session_name,
+    intended_start_at: payload.intended_start_at,
+    grace_period_minutes: payload.grace_period_minutes,
+    creator_lat: payload.creator_lat,
+    creator_lon: payload.creator_lon,
+  };
+  await renderBarcodeToCanvas(JSON.stringify(qrPayload), els.sessionQr, els.barcodeFormat.value);
 }
 
 async function renderBarcodeToCanvas(payloadText, canvas, format) {
