@@ -994,12 +994,28 @@ as $$
 declare
   v_caller public.profiles;
   v_csv text;
+  v_timezone text;
 begin
   v_caller := public.assert_authenticated();
 
   if v_caller.role not in ('coordinator', 'admin') then
     raise exception 'Only Coordinators and Admins can export canonical CSV.';
   end if;
+
+  -- Resolve the IANA timezone for this session's campus so the canonical
+  -- submitted timestamp renders as wall-clock local time with offset. Falls
+  -- back to creator_campus for cross-campus (NULL scope_campus) sessions, and
+  -- finally to UTC if neither campus is resolvable.
+  select coalesce(c.timezone, 'UTC')
+  into v_timezone
+  from public.attendance_sessions s
+  left join public.campuses c
+    on c.code = coalesce(s.scope_campus, s.creator_campus)
+  where s.id = p_session_id;
+  v_timezone := coalesce(v_timezone, 'UTC');
+
+  -- LOCAL = scoped to this transaction; reverts on function exit.
+  perform set_config('timezone', v_timezone, true);
 
   insert into public.audit_events(event_type, actor_profile_id, actor_campus, session_id)
   values ('export_canonical_attendance_csv', v_caller.profile_id, v_caller.campus, p_session_id);
@@ -1015,7 +1031,7 @@ begin
         public.csv_cell(a.session_code),
         public.csv_cell(a.session_name),
         public.csv_cell(coalesce(p.pass_id, a.submitter_pass_id)),
-        public.csv_cell(to_char(a.submitted_at at time zone 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"')),
+        public.csv_cell(to_char(a.submitted_at, 'YYYY-MM-DD"T"HH24:MI:SSOF')),
         (
           select count(*)::text from public.attendance_attempts attempts
           where attempts.session_id = a.session_id
