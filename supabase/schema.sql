@@ -1287,6 +1287,13 @@ begin
     raise exception 'link_url must start with https://.';
   end if;
 
+  -- Pinned notifications never expire; non-pinned default to a 24h window.
+  if p_pinned then
+    p_expires_at := null;
+  elsif p_expires_at is null then
+    p_expires_at := now() + interval '24 hours';
+  end if;
+
   -- If pinning, unpin any existing pin at the same scope first.
   if p_pinned then
     update public.notifications
@@ -1361,6 +1368,230 @@ begin
 end;
 $$;
 
+-- List currently-live notifications (not yet expired) within the caller's
+-- admin scope. Global admin: blank p_campus returns everything; a specific
+-- p_campus filters strictly to that campus (excluding broadcasts). Per-campus
+-- admin: scope is enforced; sees their campus rows plus broadcast (null
+-- target_campus) rows since those reach their users too.
+create or replace function public.list_live_notifications(p_campus text default null)
+returns jsonb
+language plpgsql security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_admin public.profiles;
+  v_scope text;
+begin
+  v_admin := public.assert_admin_scope(p_target_campus => p_campus);
+  v_scope := coalesce(p_campus, v_admin.admin_campus_scope);
+
+  insert into public.audit_events(event_type, actor_profile_id, actor_campus, metadata)
+  values ('list_live_notifications', v_admin.profile_id, v_admin.campus,
+          jsonb_build_object('campus', v_scope));
+
+  return coalesce((
+    select jsonb_agg(jsonb_build_object(
+      'id', n.id,
+      'title', n.title,
+      'body', n.body,
+      'link_url', n.link_url,
+      'target_campus', n.target_campus,
+      'target_group_name', n.target_group_name,
+      'target_sub_group', n.target_sub_group,
+      'target_profile_id', n.target_profile_id,
+      'pinned', n.pinned,
+      'created_by', n.created_by,
+      'created_at', n.created_at,
+      'expires_at', n.expires_at
+    ) order by n.pinned desc, n.created_at desc)
+    from public.notifications n
+    where (n.expires_at is null or n.expires_at > now())
+      and (
+        -- Global admin, no filter: all live rows.
+        (v_admin.admin_campus_scope is null and v_scope is null)
+        -- Global admin, campus filter: strictly that campus.
+        or (v_admin.admin_campus_scope is null and v_scope is not null
+            and n.target_campus = v_scope)
+        -- Per-campus admin: their campus or broadcasts.
+        or (v_admin.admin_campus_scope is not null
+            and (n.target_campus = v_scope or n.target_campus is null))
+      )
+  ), '[]'::jsonb);
+end;
+$$;
+
+-- Amend a live notification. Each value parameter null = "no change"; to
+-- explicitly clear a nullable field, include its column name in
+-- p_clear_fields (e.g. ARRAY['link_url','expires_at']). Pinned forces null
+-- expiry; rejecting an amend that would set expires_at to the past.
+create or replace function public.update_notification(
+  p_id uuid,
+  p_title text default null,
+  p_body text default null,
+  p_link_url text default null,
+  p_target_campus text default null,
+  p_target_group_name text default null,
+  p_target_sub_group text default null,
+  p_target_profile_id uuid default null,
+  p_pinned boolean default null,
+  p_expires_at timestamptz default null,
+  p_clear_fields text[] default '{}'::text[]
+)
+returns jsonb
+language plpgsql security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_caller public.profiles;
+  v_existing public.notifications;
+  v_new public.notifications;
+  v_title text;
+  v_body text;
+  v_link text;
+  v_t_campus text;
+  v_t_group text;
+  v_t_sub text;
+  v_t_profile uuid;
+  v_pinned boolean;
+  v_expires timestamptz;
+  v_changed text[] := '{}'::text[];
+begin
+  v_caller := public.assert_authenticated();
+
+  if v_caller.role not in ('coordinator', 'admin') then
+    raise exception 'Only Coordinators and Admins can amend notifications.';
+  end if;
+
+  select * into v_existing from public.notifications where id = p_id;
+  if v_existing.id is null then
+    raise exception 'Notification not found.';
+  end if;
+
+  -- Per-campus admins must own both the existing row and the new target.
+  if v_caller.role = 'admin' and v_caller.admin_campus_scope is not null then
+    if v_existing.target_campus is distinct from v_caller.admin_campus_scope then
+      raise exception 'Notification is outside your admin campus scope.';
+    end if;
+  end if;
+
+  v_title := coalesce(p_title, v_existing.title);
+  v_body := coalesce(p_body, v_existing.body);
+  v_link := case when 'link_url' = any(p_clear_fields) then null
+                 else coalesce(p_link_url, v_existing.link_url) end;
+  v_t_campus := case when 'target_campus' = any(p_clear_fields) then null
+                     else coalesce(p_target_campus, v_existing.target_campus) end;
+  v_t_group := case when 'target_group_name' = any(p_clear_fields) then null
+                    else coalesce(p_target_group_name, v_existing.target_group_name) end;
+  v_t_sub := case when 'target_sub_group' = any(p_clear_fields) then null
+                  else coalesce(p_target_sub_group, v_existing.target_sub_group) end;
+  v_t_profile := case when 'target_profile_id' = any(p_clear_fields) then null
+                      else coalesce(p_target_profile_id, v_existing.target_profile_id) end;
+  v_pinned := coalesce(p_pinned, v_existing.pinned);
+  v_expires := case when 'expires_at' = any(p_clear_fields) then null
+                    else coalesce(p_expires_at, v_existing.expires_at) end;
+
+  if v_caller.role = 'admin' and v_caller.admin_campus_scope is not null
+     and v_t_campus is distinct from v_caller.admin_campus_scope then
+    raise exception 'Notification target must match your admin campus scope.';
+  end if;
+
+  if length(trim(v_title)) = 0 or length(v_title) > 200 then
+    raise exception 'Title is required and must be at most 200 characters.';
+  end if;
+  if length(trim(v_body)) = 0 or length(v_body) > 2000 then
+    raise exception 'Body is required and must be at most 2000 characters.';
+  end if;
+  if v_link is not null and v_link !~* '^https://' then
+    raise exception 'link_url must start with https://.';
+  end if;
+
+  if v_pinned then
+    v_expires := null;
+  elsif v_expires is not null and v_expires <= now() then
+    raise exception 'expires_at must be in the future for non-pinned notifications.';
+  end if;
+
+  -- If flipping to pinned, displace any existing pin at the new scope.
+  if v_pinned and not v_existing.pinned then
+    update public.notifications
+    set pinned = false
+    where pinned
+      and id <> p_id
+      and target_campus is not distinct from v_t_campus
+      and target_group_name is not distinct from v_t_group
+      and target_sub_group is not distinct from v_t_sub
+      and target_profile_id is not distinct from v_t_profile;
+  end if;
+
+  if v_title is distinct from v_existing.title then v_changed := v_changed || 'title'; end if;
+  if v_body is distinct from v_existing.body then v_changed := v_changed || 'body'; end if;
+  if v_link is distinct from v_existing.link_url then v_changed := v_changed || 'link_url'; end if;
+  if v_t_campus is distinct from v_existing.target_campus then v_changed := v_changed || 'target_campus'; end if;
+  if v_t_group is distinct from v_existing.target_group_name then v_changed := v_changed || 'target_group_name'; end if;
+  if v_t_sub is distinct from v_existing.target_sub_group then v_changed := v_changed || 'target_sub_group'; end if;
+  if v_t_profile is distinct from v_existing.target_profile_id then v_changed := v_changed || 'target_profile_id'; end if;
+  if v_pinned is distinct from v_existing.pinned then v_changed := v_changed || 'pinned'; end if;
+  if v_expires is distinct from v_existing.expires_at then v_changed := v_changed || 'expires_at'; end if;
+
+  update public.notifications
+  set title = trim(v_title),
+      body = trim(v_body),
+      link_url = v_link,
+      target_campus = v_t_campus,
+      target_group_name = v_t_group,
+      target_sub_group = v_t_sub,
+      target_profile_id = v_t_profile,
+      pinned = v_pinned,
+      expires_at = v_expires
+  where id = p_id
+  returning * into v_new;
+
+  insert into public.audit_events(event_type, actor_profile_id, actor_campus, metadata)
+  values ('update_notification', v_caller.profile_id, v_caller.campus,
+          jsonb_build_object('notification_id', p_id, 'fields_changed', v_changed));
+
+  return to_jsonb(v_new);
+end;
+$$;
+
+-- Delete a notification. Hard delete; audit trail preserves the action.
+create or replace function public.delete_notification(p_id uuid)
+returns jsonb
+language plpgsql security definer
+set search_path = public, pg_temp
+as $$
+declare
+  v_caller public.profiles;
+  v_target public.notifications;
+begin
+  v_caller := public.assert_authenticated();
+
+  if v_caller.role not in ('coordinator', 'admin') then
+    raise exception 'Only Coordinators and Admins can delete notifications.';
+  end if;
+
+  select * into v_target from public.notifications where id = p_id;
+  if v_target.id is null then
+    raise exception 'Notification not found.';
+  end if;
+
+  if v_caller.role = 'admin'
+     and v_caller.admin_campus_scope is not null
+     and v_target.target_campus is distinct from v_caller.admin_campus_scope then
+    raise exception 'Notification is outside your admin campus scope.';
+  end if;
+
+  delete from public.notifications where id = p_id;
+
+  insert into public.audit_events(event_type, actor_profile_id, actor_campus, metadata)
+  values ('delete_notification', v_caller.profile_id, v_caller.campus,
+          jsonb_build_object('notification_id', p_id, 'pinned', v_target.pinned,
+                             'target_campus', v_target.target_campus));
+
+  return jsonb_build_object('ok', true);
+end;
+$$;
+
 create or replace function public.view_audit_events(
   p_limit integer default 100,
   p_offset integer default 0,
@@ -1387,9 +1618,11 @@ begin
     select jsonb_agg(row_to_json(events) order by events.created_at desc)
     from (
       select e.id, e.event_type, e.actor_profile_id, e.actor_campus,
+             p.pass_id as actor_pass_id,
              e.device_install_id, e.session_id, e.attendance_attempt_id,
              e.metadata, e.created_at
       from public.audit_events e
+      left join public.profiles p on p.profile_id = e.actor_profile_id
       where (v_admin.admin_campus_scope is null
              or e.actor_campus = v_admin.admin_campus_scope
              or e.actor_campus is null)
@@ -1748,6 +1981,9 @@ revoke all on function public.get_current_batch_temp_password(text) from public,
 revoke all on function public.list_unclaimed_profiles(text) from public, anon, authenticated;
 revoke all on function public.post_notification(text, text, text, text, text, text, uuid, boolean, timestamptz) from public, anon, authenticated;
 revoke all on function public.pin_notification(uuid) from public, anon, authenticated;
+revoke all on function public.list_live_notifications(text) from public, anon, authenticated;
+revoke all on function public.update_notification(uuid, text, text, text, text, text, text, uuid, boolean, timestamptz, text[]) from public, anon, authenticated;
+revoke all on function public.delete_notification(uuid) from public, anon, authenticated;
 revoke all on function public.view_audit_events(integer, integer, text) from public, anon, authenticated;
 revoke all on function public.admin_create_campus(text, text, text) from public, anon, authenticated;
 revoke all on function public.admin_rename_campus(text, text) from public, anon, authenticated;
@@ -1768,6 +2004,9 @@ grant execute on function public.get_current_batch_temp_password(text) to authen
 grant execute on function public.list_unclaimed_profiles(text) to authenticated;
 grant execute on function public.post_notification(text, text, text, text, text, text, uuid, boolean, timestamptz) to authenticated;
 grant execute on function public.pin_notification(uuid) to authenticated;
+grant execute on function public.list_live_notifications(text) to authenticated;
+grant execute on function public.update_notification(uuid, text, text, text, text, text, text, uuid, boolean, timestamptz, text[]) to authenticated;
+grant execute on function public.delete_notification(uuid) to authenticated;
 grant execute on function public.view_audit_events(integer, integer, text) to authenticated;
 grant execute on function public.admin_create_campus(text, text, text) to authenticated;
 grant execute on function public.admin_rename_campus(text, text) to authenticated;

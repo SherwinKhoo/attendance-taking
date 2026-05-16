@@ -192,7 +192,7 @@ app.innerHTML = `
     </form>
     <div class="qr-layout">
       <canvas id="session-qr"></canvas>
-      <div class="session-summary" id="session-summary">No session generated yet. Use the form above or click "Restore latest".</div>
+      <div class="session-summary" id="session-summary">No session generated yet. Use the form above or selecting from the dropdown.</div>
     </div>
     <div class="action-row">
       <button id="fullscreen-qr" type="button" disabled>Full-screen poster</button>

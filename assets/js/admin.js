@@ -120,6 +120,9 @@
       <div class="admin-section">
         <h3>Unclaimed accounts</h3>
         <div class="admin-row">
+          <input id="admin-unclaimed-campus" type="text"
+                 placeholder="Campus filter (blank = all)"
+                 value="${state.profile.admin_campus_scope ?? ""}" ${campusAttrs} />
           <button id="admin-unclaimed-refresh" type="button">Refresh</button>
         </div>
         <ul id="admin-unclaimed-list" class="admin-list"></ul>
@@ -200,10 +203,29 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1"></texta
           <input id="admin-notif-pinned" type="checkbox" />
           <span>Pin (replaces any existing pin at this scope)</span>
         </label>
+        <fieldset class="form-field">
+          <legend>Timeout</legend>
+          <label class="field-control" aria-label="Timeout">
+            <input id="admin-notif-timeout" type="number" min="0" step="1" value="0" />
+          </label>
+        </fieldset>
+        <p class="status-line">Hours. Blank or 0 → 24 hours default. Pinned notifications never expire.</p>
         <div class="admin-row">
           <button id="admin-notif-submit" type="button">Post</button>
         </div>
         <p class="status-line" id="admin-notif-status"></p>
+      </div>
+
+      <div class="admin-section">
+        <h3>Live notifications</h3>
+        <div class="admin-row">
+          <input id="admin-notif-live-campus" type="text"
+                 placeholder="Campus filter (blank = all)"
+                 value="${state.profile.admin_campus_scope ?? ""}" ${campusAttrs} />
+          <button id="admin-notif-live-refresh" type="button">Refresh</button>
+        </div>
+        <ul id="admin-notif-live-list" class="admin-list"></ul>
+        <p class="status-line" id="admin-notif-live-status"></p>
       </div>
 
       ${pinCampus ? "" : `
@@ -262,6 +284,7 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1"></texta
     bind("admin-revoke-submit", handleRevoke, "admin-revoke-result");
     bind("admin-reset-submit", handleReset, "admin-reset-result");
     bind("admin-notif-submit", handleNotify, "admin-notif-status");
+    bind("admin-notif-live-refresh", refreshLiveNotifications, "admin-notif-live-status");
     if (!pinCampus) {
       bind("admin-campus-create-submit", handleCampusCreate, "admin-campus-status");
       bind("admin-campus-list-refresh", refreshCampusList, "admin-campus-status");
@@ -423,8 +446,13 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1"></texta
     const list = document.getElementById("admin-unclaimed-list");
     list.innerHTML = "";
     try {
+      const campusFilter =
+        document
+          .getElementById("admin-unclaimed-campus")
+          .value.trim()
+          .toUpperCase() || null;
       const rows = await state.rpc("list_unclaimed_profiles", {
-        p_campus: state.profile.admin_campus_scope ?? null,
+        p_campus: campusFilter,
       });
       if (!rows || rows.length === 0) {
         const li = document.createElement("li");
@@ -434,7 +462,13 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1"></texta
       }
       for (const r of rows) {
         const li = document.createElement("li");
-        li.textContent = `${r.pass_id} — ${r.role} — ${r.campus ?? "—"} (created ${new Date(r.created_at).toLocaleString()})`;
+        const meta = document.createElement("span");
+        meta.textContent = `${r.pass_id} — ${r.role} (created ${new Date(r.created_at).toLocaleString()})`;
+        const revokeBtn = document.createElement("button");
+        revokeBtn.textContent = "Revoke";
+        revokeBtn.style.marginLeft = "0.5em";
+        revokeBtn.addEventListener("click", () => handleUnclaimedRevoke(r));
+        li.append(meta, revokeBtn);
         list.append(li);
       }
     } catch (err) {
@@ -702,6 +736,14 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1"></texta
     const sub_group =
       document.getElementById("admin-notif-subgroup").value.trim() || null;
     const pinned = document.getElementById("admin-notif-pinned").checked;
+    const timeoutRaw = document
+      .getElementById("admin-notif-timeout")
+      .value.trim();
+    const timeoutHours = timeoutRaw === "" ? 0 : Number(timeoutRaw);
+    let expiresAt = null;
+    if (!pinned && Number.isFinite(timeoutHours) && timeoutHours > 0) {
+      expiresAt = new Date(Date.now() + timeoutHours * 3600_000).toISOString();
+    }
     const status = document.getElementById("admin-notif-status");
 
     if (!title || !body) {
@@ -718,15 +760,190 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1"></texta
         p_target_sub_group: sub_group,
         p_target_profile_id: null,
         p_pinned: pinned,
-        p_expires_at: null,
+        p_expires_at: expiresAt,
       });
       status.textContent = "Notification posted.";
       document.getElementById("admin-notif-title").value = "";
       document.getElementById("admin-notif-body").value = "";
       document.getElementById("admin-notif-link").value = "";
+      await refreshLiveNotifications();
     } catch (err) {
       status.textContent = err.message;
     }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Live notifications
+  // ---------------------------------------------------------------------------
+
+  async function refreshLiveNotifications() {
+    const list = document.getElementById("admin-notif-live-list");
+    list.innerHTML = "";
+    const campus =
+      document
+        .getElementById("admin-notif-live-campus")
+        .value.trim()
+        .toUpperCase() || null;
+    try {
+      const rows = await state.rpc("list_live_notifications", {
+        p_campus: campus,
+      });
+      if (!rows || rows.length === 0) {
+        const li = document.createElement("li");
+        li.textContent = "No live notifications.";
+        list.append(li);
+        return;
+      }
+      for (const n of rows) {
+        const li = document.createElement("li");
+        const meta = document.createElement("span");
+        const scope =
+          [n.target_campus, n.target_group_name, n.target_sub_group]
+            .filter(Boolean)
+            .join("/") || "broadcast";
+        const exp = n.expires_at
+          ? `expires ${new Date(n.expires_at).toLocaleString()}`
+          : "no expiry";
+        const pin = n.pinned ? " [pinned]" : "";
+        meta.textContent = `${n.title} — ${scope} — ${exp}${pin}`;
+
+        const editBtn = document.createElement("button");
+        editBtn.textContent = "Edit";
+        editBtn.style.marginLeft = "0.5em";
+        editBtn.addEventListener("click", () => handleNotificationEdit(n));
+
+        const deleteBtn = document.createElement("button");
+        deleteBtn.textContent = "Delete";
+        deleteBtn.style.marginLeft = "0.25em";
+        deleteBtn.addEventListener("click", () => handleNotificationDelete(n));
+
+        li.append(meta, editBtn, deleteBtn);
+        list.append(li);
+      }
+    } catch (err) {
+      const li = document.createElement("li");
+      li.textContent = err.message;
+      list.append(li);
+    }
+  }
+
+  // Prompt-driven inline edit. For each field, accepting the default leaves it
+  // unchanged; entering the literal "clear" nulls the field (only meaningful
+  // for nullable columns).
+  async function handleNotificationEdit(n) {
+    const status = document.getElementById("admin-notif-live-status");
+    const clearFields = [];
+    const payload = { p_id: n.id };
+
+    function askText(label, current, columnName, { nullable = false } = {}) {
+      const hint = nullable ? " (blank = no change, 'clear' = null)" : " (blank = no change)";
+      const reply = window.prompt(`${label}${hint}`, current ?? "");
+      if (reply === null) return { cancel: true };
+      const trimmed = reply.trim();
+      if (trimmed === "") return {};
+      if (nullable && trimmed.toLowerCase() === "clear") {
+        clearFields.push(columnName);
+        return {};
+      }
+      return { value: trimmed };
+    }
+
+    let r;
+    r = askText("Title", n.title, "title"); if (r.cancel) return;
+    if ("value" in r) payload.p_title = r.value;
+    r = askText("Body", n.body, "body"); if (r.cancel) return;
+    if ("value" in r) payload.p_body = r.value;
+    r = askText("Link URL (https://...)", n.link_url, "link_url", { nullable: true }); if (r.cancel) return;
+    if ("value" in r) payload.p_link_url = r.value;
+    r = askText("Target campus", n.target_campus, "target_campus", { nullable: true }); if (r.cancel) return;
+    if ("value" in r) payload.p_target_campus = r.value.toUpperCase();
+    r = askText("Target group", n.target_group_name, "target_group_name", { nullable: true }); if (r.cancel) return;
+    if ("value" in r) payload.p_target_group_name = r.value;
+    r = askText("Target sub-group", n.target_sub_group, "target_sub_group", { nullable: true }); if (r.cancel) return;
+    if ("value" in r) payload.p_target_sub_group = r.value;
+
+    const pinnedReply = window.prompt(
+      `Pinned? Enter 'yes' or 'no' (blank = no change). Pinning forces no expiry.`,
+      n.pinned ? "yes" : "no",
+    );
+    if (pinnedReply === null) return;
+    const pinnedTrim = pinnedReply.trim().toLowerCase();
+    let nextPinned = n.pinned;
+    if (pinnedTrim === "yes" || pinnedTrim === "y" || pinnedTrim === "true") {
+      payload.p_pinned = true;
+      nextPinned = true;
+    } else if (pinnedTrim === "no" || pinnedTrim === "n" || pinnedTrim === "false") {
+      payload.p_pinned = false;
+      nextPinned = false;
+    }
+
+    if (!nextPinned) {
+      const expiryReply = window.prompt(
+        `Expires in N hours from now (blank = no change, 'clear' = never expire, '0' = 24h default)`,
+        "",
+      );
+      if (expiryReply === null) return;
+      const expTrim = expiryReply.trim();
+      if (expTrim.toLowerCase() === "clear") {
+        clearFields.push("expires_at");
+      } else if (expTrim !== "") {
+        const hours = Number(expTrim);
+        if (!Number.isFinite(hours) || hours < 0) {
+          status.textContent = "Invalid hours value.";
+          return;
+        }
+        const effective = hours === 0 ? 24 : hours;
+        payload.p_expires_at = new Date(Date.now() + effective * 3600_000).toISOString();
+      }
+    } else {
+      clearFields.push("expires_at");
+    }
+
+    if (clearFields.length > 0) payload.p_clear_fields = clearFields;
+
+    try {
+      await state.rpc("update_notification", payload);
+      status.textContent = "Notification updated.";
+      await refreshLiveNotifications();
+    } catch (err) {
+      status.textContent = err.message;
+    }
+  }
+
+  async function handleNotificationDelete(n) {
+    const status = document.getElementById("admin-notif-live-status");
+    if (!window.confirm(`Delete notification '${n.title}'? This cannot be undone.`)) {
+      return;
+    }
+    try {
+      await state.rpc("delete_notification", { p_id: n.id });
+      status.textContent = "Notification deleted.";
+      await refreshLiveNotifications();
+    } catch (err) {
+      status.textContent = err.message;
+    }
+  }
+
+  // ---------------------------------------------------------------------------
+  // Per-row unclaimed revoke
+  // ---------------------------------------------------------------------------
+
+  async function handleUnclaimedRevoke(r) {
+    if (
+      !window.confirm(
+        `Revoke ${r.pass_id} (${r.campus})? This deletes the auth user and archives the profile.`,
+      )
+    ) {
+      return;
+    }
+    const { error } = await invokeWithTimeout("revoke", {
+      body: { campus: r.campus, pass_ids: [r.pass_id] },
+    });
+    if (error) {
+      window.alert(error.message);
+      return;
+    }
+    await refreshUnclaimed();
   }
 
   // ---------------------------------------------------------------------------
@@ -752,7 +969,20 @@ X-100,user,${state.profile.admin_campus_scope ?? "PROTO"},Group A,Sub 1"></texta
       }
       for (const e of rows) {
         const li = document.createElement("li");
-        li.textContent = `${new Date(e.created_at).toLocaleString()} — ${e.event_type} — ${e.actor_campus ?? "—"} — ${e.actor_profile_id ?? "—"}`;
+        let idLabel;
+        if (!e.actor_profile_id) {
+          idLabel = "—";
+        } else if (e.actor_campus && e.actor_pass_id) {
+          idLabel = `${e.actor_campus}-${e.actor_pass_id}`;
+        } else {
+          idLabel = `${e.actor_campus ?? "?"}-?`;
+        }
+        const ts = new Date(e.created_at).toLocaleString();
+        li.textContent = `${ts} — ${e.event_type} — ${idLabel}`;
+        if (e.actor_profile_id) {
+          li.title = e.actor_profile_id;
+          li.dataset.profileId = e.actor_profile_id;
+        }
         list.append(li);
       }
     } catch (err) {
