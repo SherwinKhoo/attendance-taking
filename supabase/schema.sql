@@ -174,18 +174,23 @@ create table public.attendance_attempts (
   id uuid primary key default gen_random_uuid(),
   -- ON DELETE CASCADE: an attendance attempt is meaningless without its
   -- parent session, and the row already snapshots session_code / session_name /
-  -- submitter_pass_id / submitter_campus / scanned_session_payload for forensic
+  -- submitter_pass_id / submitter_campus / submitter_group_name /
+  -- submitter_sub_group / scanned_session_payload for forensic
   -- lookups via audit_events (whose session_id has no FK and survives).
   session_id uuid not null references public.attendance_sessions(id) on delete cascade,
   session_code text not null,
   session_name text not null,
   scanned_session_payload jsonb not null,
-  -- SET NULL on profile delete; submitter_pass_id / submitter_campus
-  -- snapshot the submitter's identifying strings so report RPCs and CSV
-  -- exports still resolve a pass ID after the user is revoked.
+  -- SET NULL on profile delete; submitter_pass_id / submitter_campus /
+  -- submitter_group_name / submitter_sub_group snapshot the submitter's
+  -- identifying strings and organizational unit so report RPCs and CSV
+  -- exports still resolve them after the user is revoked (e.g. lost-ID
+  -- reissue, where the original attendance row must still stand on its own).
   profile_id uuid references public.profiles(profile_id) on delete set null,
   submitter_pass_id text,
   submitter_campus text,
+  submitter_group_name text,
+  submitter_sub_group text,
   device_install_id uuid not null,
   submitted_at timestamptz not null default now(),
   submitter_lat double precision not null,
@@ -754,12 +759,14 @@ begin
   insert into public.attendance_attempts(
     session_id, session_code, session_name, scanned_session_payload,
     profile_id, submitter_pass_id, submitter_campus,
+    submitter_group_name, submitter_sub_group,
     device_install_id, submitter_lat, submitter_lon,
     status, flags, canonical, distance_from_session_m
   )
   values (
     v_session.id, v_session.code, v_session.name, p_session_payload,
     v_caller.profile_id, v_caller.pass_id, v_caller.campus,
+    v_caller.group_name, v_caller.sub_group,
     p_device_install_id, p_submitter_lat, p_submitter_lon,
     case when cardinality(v_flags) > 0 then 'flagged' else 'accepted' end,
     v_flags, v_canonical, v_distance
@@ -915,12 +922,14 @@ begin
   insert into public.attendance_attempts(
     session_id, session_code, session_name, scanned_session_payload,
     profile_id, submitter_pass_id, submitter_campus,
+    submitter_group_name, submitter_sub_group,
     device_install_id, submitter_lat, submitter_lon,
     status, flags, canonical, distance_from_session_m
   )
   values (
     v_session.id, v_session.code, v_session.name, v_payload,
     v_caller.profile_id, v_caller.pass_id, v_caller.campus,
+    v_caller.group_name, v_caller.sub_group,
     p_device_install_id, p_submitter_lat, p_submitter_lon,
     case when cardinality(v_flags) > 0 then 'flagged' else 'accepted' end,
     v_flags, v_canonical, v_distance
@@ -1024,13 +1033,16 @@ begin
   into v_csv
   from (
     select 0 as sort_order,
-      'session code,session name,pass ID,canonical submitted timestamp,attempt count,flag count,flags,device install ID,submitter coordinates,late flag status,distance from session QR location' as line
+      'session code,session name,pass ID,campus,group,sub-group,canonical submitted timestamp,attempt count,flag count,flags,device install ID,submitter coordinates,late flag status,distance from session QR location' as line
     union all
     select 1,
       concat_ws(',',
         public.csv_cell(a.session_code),
         public.csv_cell(a.session_name),
         public.csv_cell(coalesce(p.pass_id, a.submitter_pass_id)),
+        public.csv_cell(coalesce(p.campus, a.submitter_campus)),
+        public.csv_cell(coalesce(p.group_name, a.submitter_group_name)),
+        public.csv_cell(coalesce(p.sub_group, a.submitter_sub_group)),
         public.csv_cell(to_char(a.submitted_at, 'YYYY-MM-DD"T"HH24:MI:SSOF')),
         (
           select count(*)::text from public.attendance_attempts attempts
@@ -1051,7 +1063,7 @@ begin
   ) rows;
 
   return coalesce(v_csv,
-    'session code,session name,pass ID,canonical submitted timestamp,attempt count,flag count,flags,device install ID,submitter coordinates,late flag status,distance from session QR location');
+    'session code,session name,pass ID,campus,group,sub-group,canonical submitted timestamp,attempt count,flag count,flags,device install ID,submitter coordinates,late flag status,distance from session QR location');
 end;
 $$;
 
