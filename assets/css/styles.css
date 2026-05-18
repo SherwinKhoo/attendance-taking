@@ -195,21 +195,29 @@ h2 {
 
 .form-grid {
   display: grid;
-  grid-template-columns:
-    minmax(220px, 2fr)
-    minmax(150px, 1fr)
-    minmax(125px, 0.85fr)
-    minmax(130px, 0.85fr)
-    minmax(130px, 0.85fr)
-    minmax(140px, 0.9fr);
+  gap: 12px;
+}
+
+.form-grid label,
+.form-grid .session-form-row,
+.form-grid .form-field,
+.form-grid .checkin-modes,
+.form-grid button {
+  min-width: 0;
+}
+
+.session-form-row {
+  display: grid;
   gap: 12px;
   align-items: end;
 }
 
-.form-grid label,
-.form-grid .form-field,
-.form-grid button {
-  min-width: 0;
+.session-form-row-primary {
+  grid-template-columns: minmax(0, 1fr) minmax(260px, max-content);
+}
+
+.session-form-row-thirds {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
 }
 
 .form-grid button {
@@ -372,12 +380,6 @@ menu {
   background: rgba(127, 127, 127, 0.15);
 }
 
-@media (max-width: 1100px) {
-  .form-grid {
-    grid-template-columns: repeat(3, minmax(0, 1fr));
-  }
-}
-
 @media (max-width: 860px) {
   .app-header,
   .zone-heading,
@@ -386,7 +388,7 @@ menu {
     flex-direction: column;
   }
 
-  .form-grid,
+  .session-form-row,
   .qr-layout {
     grid-template-columns: 1fr;
   }
@@ -796,22 +798,32 @@ dialog .modal-panel menu {
   --field-surface: var(--panel);
   border: 1px solid var(--line);
   border-radius: 6px;
-  padding: 0.4rem 0.6rem 0.5rem;
-  display: flex;
-  flex-direction: column;
-  gap: 0.2rem;
+  padding: 0 10px 8px;
+  margin: 0;
+  min-height: 66px;
   font-size: 0.92rem;
 }
 .checkin-modes legend {
-  padding: 0 0.35rem;
+  padding: 0 6px;
   background: var(--field-surface);
-  font-size: 0.85rem;
   color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0;
+  text-transform: uppercase;
 }
-.checkin-modes label {
+.checkin-mode-options {
+  min-height: 42px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem 1rem;
+  align-items: center;
+}
+.checkin-mode-options label {
   display: flex;
   gap: 0.4rem;
   align-items: center;
+  white-space: nowrap;
 }
 .form-field {
   --field-surface: var(--panel);

@@ -109,15 +109,15 @@ app.innerHTML = `
     </div>
     <video id="attendance-camera" class="camera" autoplay muted playsinline></video>
     <div class="action-row">
-      <button id="attendance-camera-toggle" type="button">Start camera</button>
-      <button id="attendance-scan" type="button" disabled>Scan session QR</button>
+      <button id="attendance-camera-toggle" type="button">Start Camera</button>
+      <button id="attendance-scan" type="button" disabled>Scan QR</button>
     </div>
     <p class="status-line" id="attendance-status">Scan the session QR code to submit attendance.</p>
   </section>
 
   <section class="zone" id="geofence-zone" aria-labelledby="geofence-title" hidden>
     <div class="zone-heading">
-      <div><h2 id="geofence-title">Check in (campus grounds)</h2></div>
+      <div><h2 id="geofence-title">Check in</h2></div>
       <button id="refresh-open-sessions" type="button">Refresh</button>
     </div>
     <ul id="open-sessions-list" class="open-sessions-list">
@@ -136,67 +136,75 @@ app.innerHTML = `
       </label>
     </div>
     <form id="session-form" class="form-grid">
-      <fieldset class="form-field">
-        <legend>Session</legend>
-        <label class="field-control" aria-label="Session">
-          <input id="session-name" name="session-name" autocomplete="off" maxlength="120" required placeholder="Session Name" />
-        </label>
-      </fieldset>
-      <fieldset class="form-field">
-        <legend>Start date</legend>
-        <label class="field-control" aria-label="Start date">
-          <input id="session-date" name="session-date" type="date" required />
-        </label>
-      </fieldset>
-      <fieldset class="form-field">
-        <legend>Start time</legend>
-        <label class="field-control" aria-label="Start time">
-          <input id="session-time" name="session-time" type="time" required />
-        </label>
-      </fieldset>
-      <fieldset class="form-field">
-        <legend>Timeout</legend>
-        <label class="field-control" aria-label="Timeout">
-          <input id="grace-period" name="grace-period" type="number" min="0" step="1" value="0" required />
-        </label>
-      </fieldset>
-      <fieldset class="form-field">
-        <legend>Campus</legend>
-        <label class="field-control" aria-label="Scope campus">
-          <input id="session-scope-campus" name="session-scope-campus" type="text" autocomplete="off" maxlength="63" placeholder="Campus code" />
-        </label>
-      </fieldset>
-      <fieldset class="form-field">
-        <legend>Group (optional)</legend>
-        <label class="field-control" aria-label="Scope group">
-          <input id="session-scope-group" name="session-scope-group" type="text" autocomplete="off" maxlength="120" placeholder="Leave blank for campus-wide" />
-        </label>
-      </fieldset>
-      <fieldset class="form-field">
-        <legend>Sub-group (optional)</legend>
-        <label class="field-control" aria-label="Scope sub-group">
-          <input id="session-scope-subgroup" name="session-scope-subgroup" type="text" autocomplete="off" maxlength="120" placeholder="Leave blank for group-wide" />
-        </label>
-      </fieldset>
+      <div class="session-form-row session-form-row-primary">
+        <fieldset class="form-field">
+          <legend>Session</legend>
+          <label class="field-control" aria-label="Session">
+            <input id="session-name" name="session-name" autocomplete="off" maxlength="120" required placeholder="Session Name" />
+          </label>
+        </fieldset>
+        <fieldset class="checkin-modes">
+          <legend>Check-in modes</legend>
+          <div class="checkin-mode-options">
+            <label><input id="mode-qr" type="checkbox" checked /> QR scan</label>
+            <label><input id="mode-geofence" type="checkbox" /> No QR Code</label>
+          </div>
+        </fieldset>
+      </div>
+      <div class="session-form-row session-form-row-thirds">
+        <fieldset class="form-field">
+          <legend>Start date</legend>
+          <label class="field-control" aria-label="Start date">
+            <input id="session-date" name="session-date" type="date" required />
+          </label>
+        </fieldset>
+        <fieldset class="form-field">
+          <legend>Start time</legend>
+          <label class="field-control" aria-label="Start time">
+            <input id="session-time" name="session-time" type="time" required />
+          </label>
+        </fieldset>
+        <fieldset class="form-field">
+          <legend>Timeout</legend>
+          <label class="field-control" aria-label="Timeout">
+            <input id="grace-period" name="grace-period" type="number" min="0" step="1" value="0" required />
+          </label>
+        </fieldset>
+      </div>
+      <div class="session-form-row session-form-row-thirds">
+        <fieldset class="form-field">
+          <legend>Campus</legend>
+          <label class="field-control" aria-label="Scope campus">
+            <input id="session-scope-campus" name="session-scope-campus" type="text" autocomplete="off" maxlength="63" placeholder="Campus code" />
+          </label>
+        </fieldset>
+        <fieldset class="form-field">
+          <legend>Group (optional)</legend>
+          <label class="field-control" aria-label="Scope group">
+            <input id="session-scope-group" name="session-scope-group" type="text" autocomplete="off" maxlength="120" placeholder="Leave blank for campus-wide" />
+          </label>
+        </fieldset>
+        <fieldset class="form-field">
+          <legend>Sub-group (optional)</legend>
+          <label class="field-control" aria-label="Scope sub-group">
+            <input id="session-scope-subgroup" name="session-scope-subgroup" type="text" autocomplete="off" maxlength="120" placeholder="Leave blank for group-wide" />
+          </label>
+        </fieldset>
+      </div>
       <fieldset class="form-field is-hidden-format">
         <legend>QR format</legend>
         <input id="barcode-format" name="barcode-format" type="hidden" value="QRCode" />
         <div class="static-form-value">QR Code</div>
       </fieldset>
-      <fieldset class="checkin-modes">
-        <legend>Check-in modes</legend>
-        <label><input id="mode-qr" type="checkbox" checked /> QR scan</label>
-        <label><input id="mode-geofence" type="checkbox" /> No QR Code</label>
-      </fieldset>
-      <button id="generate-session" type="submit">Generate QR Code</button>
+      <button id="generate-session" type="submit">Generate Session</button>
     </form>
     <div class="qr-layout">
       <canvas id="session-qr"></canvas>
-      <div class="session-summary" id="session-summary">No session generated yet. Use the form above or selecting from the dropdown.</div>
+      <div class="session-summary" id="session-summary">No session generated yet. Use the form above or select from the dropdown.</div>
     </div>
     <div class="action-row">
-      <button id="fullscreen-qr" type="button" disabled>Full-screen poster</button>
-      <button id="refresh-attendee-total" type="button" disabled>Refresh attendee total</button>
+      <button id="fullscreen-qr" type="button" disabled>Full-screen</button>
+      <button id="refresh-attendee-total" type="button" disabled>Refresh Total</button>
       <button id="export-csv" type="button" disabled>Export CSV</button>
     </div>
     <p class="status-line" id="attendee-total">Total attendees: 0</p>
@@ -1385,12 +1393,12 @@ async function toggleCamera(
       video.srcObject = cameraState.mediaStream;
       await video.play();
       cameraState.isActive = true;
-      toggleButton.textContent = "Stop camera";
+      toggleButton.textContent = "Stop Camera";
       scanButton.disabled = false;
       statusElement.textContent = "Camera is active.";
     } else {
       stopCamera(cameraState, video);
-      toggleButton.textContent = "Start camera";
+      toggleButton.textContent = "Start Camera";
       scanButton.disabled = true;
       statusElement.textContent = "Camera stopped.";
     }
@@ -1811,7 +1819,7 @@ function renderSessionSummary(payload) {
     <dl>
       <div><dt>Name</dt><dd>${escapeHtml(payload.session_name)}</dd></div>
       <div><dt>Start</dt><dd>${new Date(payload.intended_start_at).toLocaleString()}</dd></div>
-      <div><dt>Grace</dt><dd>${formatGracePeriod(payload.grace_period_minutes)}</dd></div>
+      <div><dt>Timeout</dt><dd>${formatGracePeriod(payload.grace_period_minutes)}</dd></div>
       <div><dt>Location</dt><dd>${Number(payload.creator_lat).toFixed(5)}, ${Number(payload.creator_lon).toFixed(5)}</dd></div>
     </dl>
   `;
